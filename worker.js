@@ -67,6 +67,8 @@ const FRESH_NEWS_WINDOW_DAYS = 7;
 const TELEGRAM_LATEST_WINDOW_HOURS = 48;
 const TELEGRAM_LATEST_SYNC_MAX_AGE_MINUTES = 10;
 const TELEGRAM_LATEST_SYNC_LOCK_KEY = "telegram:latest:sync:lock";
+const TELEGRAM_VISIBLE_LIST_KEY_PREFIX = "telegram:visible-list:";
+const TELEGRAM_VISIBLE_LIST_TTL_SECONDS = 60 * 60 * 2;
 const AI_REENRICH_INTERVAL_HOURS = 0.5;
 const SEEN_TTL_DAYS = 100;
 const SEEN_TTL_SECONDS = 60 * 60 * 24 * SEEN_TTL_DAYS;
@@ -705,6 +707,7 @@ async function sendFilteredLatest(chatId, env, options) {
 }
 
 async function sendItemsList(chatId, env, title, items) {
+  await saveVisibleTelegramList(chatId, items, env);
   const list = formatCompactItems(items);
 
   await sendTelegramRaw(
@@ -724,6 +727,30 @@ async function sendItemsList(chatId, env, title, items) {
       replyMarkup: buildListInlineKeyboard(items),
     }
   );
+}
+
+async function saveVisibleTelegramList(chatId, items, env) {
+  const references = items
+    .slice(0, LATEST_DISPLAY_LIMIT)
+    .map((item) => String(item.itemId || "").trim())
+    .filter(Boolean);
+  if (!references.length || !env.SHOPIFY_RADAR_KV) return;
+  await env.SHOPIFY_RADAR_KV.put(
+    TELEGRAM_VISIBLE_LIST_KEY_PREFIX + String(chatId),
+    JSON.stringify(references),
+    { expirationTtl: TELEGRAM_VISIBLE_LIST_TTL_SECONDS }
+  );
+}
+
+async function getVisibleTelegramList(chatId, env) {
+  if (!env.SHOPIFY_RADAR_KV) return [];
+  try {
+    const raw = await env.SHOPIFY_RADAR_KV.get(TELEGRAM_VISIBLE_LIST_KEY_PREFIX + String(chatId));
+    const references = raw ? JSON.parse(raw) : [];
+    return Array.isArray(references) ? references.map(String).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
 }
 
 function getTelegramFormatters() {
@@ -763,7 +790,19 @@ async function sendFullLatest(chatId, env, options = {}) {
     return;
   }
 
-  await sendSingleCard(chatId, env, options.singleIndex || 1);
+  const requestedIndex = Number(options.singleIndex);
+  if (Number.isInteger(requestedIndex) && requestedIndex > 0) {
+    const visibleList = await getVisibleTelegramList(chatId, env);
+    const reference = visibleList[requestedIndex - 1];
+    if (reference) {
+      return sendSingleCardByReference(chatId, env, reference, {
+        index: requestedIndex,
+        total: visibleList.length,
+      });
+    }
+  }
+
+  await sendSingleCard(chatId, env, requestedIndex || 1);
 }
 
 async function sendSingleCard(chatId, env, index = 1) {
@@ -2658,6 +2697,8 @@ export const __test = {
   buildDigestInlineKeyboard,
   buildAuditInlineKeyboard,
   buildAdminInlineKeyboard,
+  saveVisibleTelegramList,
+  getVisibleTelegramList,
   sortItemsByDateDesc,
   filterItemsWithinHours,
   fetchContentSource,

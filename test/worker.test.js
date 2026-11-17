@@ -708,6 +708,15 @@ test("full callback preserves the visible list position", () => {
   assert.equal(keyboard[1][0].callback_data, "article:second-item-1234:2:3");
 });
 
+test("full command resolves the visible list snapshot instead of a changed current index", async () => {
+  const kv = new MemoryKv();
+  await __test.saveVisibleTelegramList(42, [
+    { itemId: "cloudflare-item" },
+    { itemId: "github-item" },
+  ], { SHOPIFY_RADAR_KV: kv });
+  assert.deepEqual(await __test.getVisibleTelegramList(42, { SHOPIFY_RADAR_KV: kv }), ["cloudflare-item", "github-item"]);
+});
+
 test("v15 keeps the main Telegram menu compact and groups topics separately", () => {
   const mainKeyboard = __test.buildMainReplyKeyboard().keyboard.flat().map((button) => button.text);
   assert.deepEqual(mainKeyboard, [

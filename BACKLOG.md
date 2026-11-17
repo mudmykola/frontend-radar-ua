@@ -4,6 +4,20 @@
 
 ## Done
 
+### Testing: Cover Worker runtime boundaries v15.2
+
+- Priority: High
+- Labels: `core`, `backend`, `api`, `Bug`, `Improvement`, `DX`
+- Assignee: tovarinfobud
+- Status: Done
+- Scope:
+  - add direct KV repository tests for TTL, dedupe, freshness, malformed records and digest separation;
+  - add Gemini request, retry, fallback, configuration and empty-response tests;
+  - add Telegram topic/latest integration tests with stale-record exclusion;
+  - add webhook failure, idempotency, payload-limit, auth, health and configuration route tests;
+  - add serialized test and coverage commands.
+- Completion: 59 tests pass. `pnpm run test:coverage` reports 51.07% total line coverage, 98.78% repository coverage and 95.05% AI-client coverage. The epic also caught and fixed an untested `sortBy` repository runtime bug.
+
 ### Architecture: Split Worker into bounded modules v15.1
 
 - Priority: Medium

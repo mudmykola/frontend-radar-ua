@@ -30,7 +30,7 @@ Shopify — лише одне з джерел. Радар також охопл�
 
 ## Джерела
 
-Shopify Developer Changelog, Vue і Nuxt official blogs, Vue/Nuxt/Pinia/Vite/Nitro/Nuxt UI/Vitest/Playwright releases, Vite Blog, Tailwind CSS Blog і releases, TypeScript і Sass releases, Node.js releases, MDN Blog, web.dev Blog, Cloudflare Developer Changelog і Cloudflare Blog.
+Shopify Developer Changelog, Vue і Nuxt official blogs, Vue/Nuxt/Pinia/Vite/Nitro/Nuxt UI/Vitest/Playwright releases, Vite Blog, WebStorm Official Blog, pnpm/npm/Bun/Homebrew releases, Storybook releases, Figma Release Notes, Chrome for Developers, Mozilla Hacks і Firefox Nightly, OpenAI News і Codex Changelog, Claude Code releases, GitHub Blog/Changelog, GitLab Blog, TLDR Dev, Tailwind CSS Blog і releases, TypeScript і Sass releases, Node.js releases, MDN Blog, web.dev Blog, Cloudflare Developer Changelog і Cloudflare Blog.
 
 ## Telegram-команди
 
@@ -138,7 +138,7 @@ Production Worker історично має ім’я `shopify-radar-ua`. Це �
 
 ## Test workflow
 
-- `pnpm test` — 88 regression and integration tests with serialized execution;
+- `pnpm test` — 91 regression and integration tests with serialized execution;
 - `pnpm run test:coverage` — Node test coverage report for Worker and bounded modules;
 - `pnpm run check` — syntax validation;
 - `pnpm exec wrangler deploy --dry-run` — deployment bundle and bindings validation.

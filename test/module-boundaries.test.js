@@ -21,6 +21,7 @@ import { createTelegramHandlers } from "../src/telegram/handlers.js";
 import { normalizeTelegramCommand, parseCommandArgs, parseOptionalIndex } from "../src/telegram/parsing.js";
 import { buildFallbackApplicationItems, buildFallbackChecklistItems } from "../src/enrichment/fallback-content.js";
 import { createEvidenceRules } from "../src/enrichment/evidence.js";
+import { CONTENT_SOURCES, APPROVED_ARTICLE_HOSTS } from "../src/config/sources.js";
 import { createItemBuilder } from "../src/enrichment/item-builder.js";
 import { buildRemoveKeyboard, buildListInlineKeyboard, buildItemInlineKeyboard, buildSettingsInlineKeyboard } from "../src/telegram/keyboards.js";
 
@@ -343,6 +344,56 @@ test("item builder merges normalized AI fields with source metadata", () => {
   assert.equal(item.uaTitle, "Нова картка");
   assert.equal(item.usedFallback, true);
   assert.equal(item.savedAt, "2026-11-17T00:00:00.000Z");
+});
+
+test("sources include the official WebStorm feed and approved article host", () => {
+  const source = CONTENT_SOURCES.find((item) => item.id === "webstorm");
+  assert.equal(source?.feedUrl, "https://blog.jetbrains.com/webstorm/feed/");
+  assert.ok(source?.tags.includes("webstorm"));
+  assert.equal(APPROVED_ARTICLE_HOSTS.has("blog.jetbrains.com"), true);
+});
+
+test("sources include the requested official toolchain and browser feeds", () => {
+  const expected = {
+    pnpm: "https://github.com/pnpm/pnpm/releases.atom",
+    npm: "https://github.com/npm/cli/releases.atom",
+    bun: "https://github.com/oven-sh/bun/releases.atom",
+    homebrew: "https://github.com/Homebrew/brew/releases.atom",
+    storybook: "https://github.com/storybookjs/storybook/releases.atom",
+    figma: "https://www.figma.com/release-notes/feed/atom.xml",
+    "chrome-dev": "https://developer.chrome.com/feeds/blog.xml",
+    "mozilla-hacks": "https://hacks.mozilla.org/feed/",
+    "firefox-nightly": "https://www.mozilla.org/en-US/firefox/nightly/notes/feed/",
+  };
+  for (const [id, feedUrl] of Object.entries(expected)) {
+    const source = CONTENT_SOURCES.find((item) => item.id === id);
+    assert.equal(source?.feedUrl, feedUrl, `missing feed URL for ${id}`);
+    assert.equal(source?.format, id === "pnpm" || id === "npm" || id === "bun" || id === "homebrew" || id === "storybook" || id === "figma" ? "atom" : "rss");
+    assert.ok(source?.tags.length, `missing tags for ${id}`);
+  }
+  for (const host of ["developer.chrome.com", "hacks.mozilla.org", "mozilla.org", "firefox.com", "figma.com"]) {
+    assert.equal(APPROVED_ARTICLE_HOSTS.has(host), true, `host is not approved: ${host}`);
+  }
+});
+
+test("sources include official AI, GitHub, GitLab and developer-news feeds", () => {
+  const expected = {
+    openai: "https://openai.com/news/rss.xml",
+    "openai-codex": "https://developers.openai.com/codex/changelog/rss.xml",
+    "claude-code": "https://github.com/anthropics/claude-code/releases.atom",
+    "github-blog": "https://github.blog/feed/",
+    "github-changelog": "https://github.blog/changelog/feed/",
+    gitlab: "https://about.gitlab.com/atom.xml",
+    "tldr-dev": "https://tldr.tech/api/rss/tech",
+  };
+  for (const [id, feedUrl] of Object.entries(expected)) {
+    const source = CONTENT_SOURCES.find((item) => item.id === id);
+    assert.equal(source?.feedUrl, feedUrl, `missing feed URL for ${id}`);
+    assert.ok(source?.tags.includes("ai") || source?.tags.includes("developer-tools"), `missing AI/dev tags for ${id}`);
+  }
+  for (const host of ["openai.com", "developers.openai.com", "github.blog", "about.gitlab.com", "tldr.tech"]) {
+    assert.equal(APPROVED_ARTICLE_HOSTS.has(host), true, `host is not approved: ${host}`);
+  }
 });
 
 test("feed filters reject future, stale, prerelease and routine patch noise", () => {

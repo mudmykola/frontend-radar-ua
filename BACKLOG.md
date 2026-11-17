@@ -31,7 +31,7 @@
   - add a practical-only feed shortcut;
   - keep legacy slash commands working for compatibility;
   - update README, tests and Dev Log.
-- Completion: Compact v15 keyboard, inline topic menu, user-facing Telegram command menu, `/practice`, concise help and welcome copy are implemented. Legacy `/card`, `/p0`, `/audit` and admin commands remain compatible but are hidden from the menu. `/latest` and `/full N` stay strictly date-first, use a 48-hour freshness window and trigger guarded on-demand sync when cron is stale; personalization is limited to digest. Full callbacks preserve the visible list position and total, while contextual keyboards no longer duplicate `Full`, `Latest` and `Audit`. Local implementation is validated by 40 tests; production deployment is pending this freshness-window change.
+- Completion: Compact v15 keyboard, inline topic menu, user-facing Telegram command menu, `/practice`, concise help and welcome copy are implemented. Legacy `/card`, `/p0`, `/audit` and admin commands remain compatible but are hidden from the menu. `/latest`, thematic feeds and `/full N` stay strictly date-first, use a 48-hour freshness window and trigger guarded on-demand sync when cron is stale; personalization is limited to digest. Full callbacks preserve the visible list position and total, while contextual keyboards no longer duplicate `Full`, `Latest` and `Audit`. Local implementation is validated by 40 tests; production deployment is pending this freshness-window change.
 
 ## Backlog
 

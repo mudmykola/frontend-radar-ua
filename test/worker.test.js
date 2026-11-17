@@ -670,7 +670,7 @@ test("content quality epic rejects prerelease and non-developer source noise", (
   }), true);
 });
 
-test("v12 article keyboard exposes all reading levels and feedback", () => {
+test("article keyboard exposes focused reading actions without duplicate navigation", () => {
   const keyboard = __test.buildItemInlineKeyboard({
     itemId: "1234567890abcdef",
     url: "https://example.test/article",
@@ -680,7 +680,11 @@ test("v12 article keyboard exposes all reading levels and feedback", () => {
   assert.ok(callbacks.some((value) => value.startsWith("mode:k:")));
   assert.ok(callbacks.some((value) => value.startsWith("mode:r:")));
   assert.ok(callbacks.some((value) => value.startsWith("feedback:x:")));
-  assert.ok(callbacks.some((value) => value === "article:1234567890abcdef"));
+  assert.ok(callbacks.includes("latest"));
+  assert.ok(!callbacks.includes("full"));
+  assert.ok(!callbacks.includes("audit"));
+  assert.ok(keyboard.some((button) => button.text === "🔗 Джерело"));
+  assert.ok(keyboard.every((button) => !["Source", "Latest", "Full", "Audit"].includes(button.text)));
 });
 
 test("full buttons reference the exact article instead of its changing list position", () => {
@@ -689,7 +693,72 @@ test("full buttons reference the exact article instead of its changing list posi
     { itemId: "bbbbbbbbbbbbbbbb2222", url: "https://example.test/second" },
   ]).inline_keyboard;
 
-  assert.equal(keyboard[0][0].callback_data, "article:aaaaaaaaaaaaaaaa");
-  assert.equal(keyboard[1][0].callback_data, "article:bbbbbbbbbbbbbbbb");
+  assert.equal(keyboard[0][0].callback_data, "article:aaaaaaaaaaaaaaaa:1:2");
+  assert.equal(keyboard[1][0].callback_data, "article:bbbbbbbbbbbbbbbb:2:2");
   assert.notEqual(keyboard[0][0].callback_data, "card:0");
+});
+
+test("full callback preserves the visible list position", () => {
+  const keyboard = __test.buildListInlineKeyboard([
+    { itemId: "first-item-123456", url: "https://example.test/first" },
+    { itemId: "second-item-12345", url: "https://example.test/second" },
+    { itemId: "third-item-1234567", url: "https://example.test/third" },
+  ]).inline_keyboard;
+
+  assert.equal(keyboard[1][0].callback_data, "article:second-item-1234:2:3");
+});
+
+test("v15 keeps the main Telegram menu compact and groups topics separately", () => {
+  const mainKeyboard = __test.buildMainReplyKeyboard().keyboard.flat().map((button) => button.text);
+  assert.deepEqual(mainKeyboard, [
+    "🆕 Свіже",
+    "🎯 Для мене",
+    "🧰 Практика",
+    "🗂 Теми",
+    "⚙️ Налаштування",
+    "ℹ️ Допомога",
+  ]);
+
+  const topicButtons = __test.buildTopicsInlineKeyboard().inline_keyboard.flat();
+  assert.ok(topicButtons.some((button) => button.callback_data === "topic:vue"));
+  assert.ok(topicButtons.some((button) => button.callback_data === "topic:shopify"));
+  assert.ok(topicButtons.some((button) => button.callback_data === "latest"));
+});
+
+test("context menus use Ukrainian navigation without duplicate full or audit actions", () => {
+  for (const builder of [
+    __test.buildDigestInlineKeyboard,
+    __test.buildAuditInlineKeyboard,
+    __test.buildAdminInlineKeyboard,
+  ]) {
+    const buttons = builder().inline_keyboard.flat();
+    const callbacks = buttons.map((button) => button.callback_data).filter(Boolean);
+    assert.ok(callbacks.includes("latest"));
+    assert.ok(callbacks.includes("topics"));
+    assert.ok(!callbacks.includes("full"));
+    assert.ok(!callbacks.includes("audit"));
+    assert.ok(buttons.every((button) => !["Latest", "Full", "Audit", "Source"].includes(button.text)));
+  }
+});
+
+test("Telegram command menu exposes only the user-facing navigation", () => {
+  const commands = __test.buildTelegramCommandMenu();
+  const names = commands.map((command) => command.command);
+
+  assert.deepEqual(names, [
+    "start",
+    "latest",
+    "practice",
+    "topics",
+    "full",
+    "digest",
+    "settings",
+    "help",
+    "stop",
+  ]);
+  assert.ok(!names.includes("audit"));
+  assert.ok(!names.includes("p0"));
+  assert.ok(!names.includes("card"));
+  assert.ok(!names.includes("stats"));
+  assert.ok(!names.includes("refresh"));
 });

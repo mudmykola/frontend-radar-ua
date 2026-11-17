@@ -49,7 +49,7 @@ const APPROVED_ARTICLE_HOSTS = new Set([
 ]);
 
 const SERVICE_NAME = "Frontend Intelligence Radar UA";
-const SERVICE_VERSION = "v14.0";
+const SERVICE_VERSION = "v15.0";
 
 const MAX_ITEMS_PER_RUN = 3;
 const MIN_PUBLISH_QUALITY = 70;
@@ -494,20 +494,7 @@ async function configureTelegramWebhook(request, env) {
 }
 
 async function configureTelegramProfile(env) {
-  const commands = [
-    ["start", "Запустити Frontend Intelligence Radar"],
-    ["latest", "Найсвіжіші frontend-новини"],
-    ["full", "Повні технічні розбори"],
-    ["vue", "Vue і Pinia"],
-    ["nuxt", "Nuxt, SSR і Nitro"],
-    ["js", "JavaScript, TypeScript, Node і Vite"],
-    ["css", "CSS, SCSS, Tailwind, UI та a11y"],
-    ["shopify", "Shopify, Liquid, checkout та API"],
-    ["cloudflare", "Cloudflare Workers та edge"],
-    ["digest", "Персональне ранкове зведення"],
-    ["settings", "Налаштувати теми й пріоритет"],
-    ["help", "Усі команди"],
-  ].map(([command, description]) => ({ command, description }));
+  const commands = buildTelegramCommandMenu();
   const operations = [
     ["setMyName", { name: SERVICE_NAME }],
     [
@@ -552,6 +539,20 @@ async function configureTelegramProfile(env) {
       if (!response.ok || !result.ok) throw new Error(`Telegram setMyProfilePhoto failed with status ${response.status}`);
     }
   }
+}
+
+function buildTelegramCommandMenu() {
+  return [
+    ["start", "Запустити Radar"],
+    ["latest", "Свіжі перевірені новини"],
+    ["practice", "Новини з конкретною дією"],
+    ["topics", "Обрати frontend-екосистему"],
+    ["full", "Відкрити повний розбір"],
+    ["digest", "Коротке персональне зведення"],
+    ["settings", "Налаштувати теми й пріоритет"],
+    ["help", "Як користуватися Radar"],
+    ["stop", "Вимкнути автоматичні новини"],
+  ].map(([command, description]) => ({ command, description }));
 }
 
 async function getTelegramWebhookInfo(env) {
@@ -944,6 +945,25 @@ async function handleTelegramWebhook(update, env) {
     return;
   }
 
+  if (command === "/practice") {
+    await saveSubscriber(chatId, message, env);
+    await sendFilteredLatest(chatId, env, {
+      title: "🧰 ПРАКТИЧНІ ЗМІНИ",
+      emptyTitle: "🧰 Практичних змін поки немає",
+      predicate: (item) => Boolean(
+        (item.todayAction || item.clientTask) &&
+        ((item.applicationItems || []).length || (item.checklistItems || []).length)
+      ),
+    });
+    return;
+  }
+
+  if (command === "/topics") {
+    await saveSubscriber(chatId, message, env);
+    await sendTopics(chatId, env);
+    return;
+  }
+
   if (command === "/full") {
     await saveSubscriber(chatId, message, env);
     await sendFullLatest(chatId, env, { singleIndex: parseOptionalIndex(args[0]) });
@@ -1051,9 +1071,12 @@ async function handleTelegramCallback(callbackQuery, env) {
 
   try {
     if (data.startsWith("article:")) {
-      const itemReference = data.slice("article:".length);
+      const [, itemReference, displayIndex, displayTotal] = data.split(":");
       await answerCallbackQuery(callbackQuery.id, env, "Відкриваю обрану статтю...");
-      await sendSingleCardByReference(chatId, env, itemReference);
+      await sendSingleCardByReference(chatId, env, itemReference, {
+        index: parseOptionalIndex(displayIndex),
+        total: parseOptionalIndex(displayTotal),
+      });
       return;
     }
 
@@ -1067,6 +1090,29 @@ async function handleTelegramCallback(callbackQuery, env) {
     if (data === "latest") {
       await answerCallbackQuery(callbackQuery.id, env, "Останні новини");
       await sendLatest(chatId, env);
+      return;
+    }
+
+    if (data === "topics") {
+      await answerCallbackQuery(callbackQuery.id, env, "Обирай тему");
+      await sendTopics(chatId, env);
+      return;
+    }
+
+    if (data.startsWith("topic:")) {
+      const topic = data.slice("topic:".length);
+      const topicConfig = TOPIC_MENU.find((item) => item.id === topic);
+      if (!topicConfig) {
+        await answerCallbackQuery(callbackQuery.id, env, "Тему не знайдено");
+        return;
+      }
+
+      await answerCallbackQuery(callbackQuery.id, env, `Тема: ${topicConfig.label}`);
+      await sendFilteredLatest(chatId, env, {
+        title: topicConfig.title,
+        emptyTitle: topicConfig.emptyTitle,
+        predicate: (item) => matchesDevTags(item, topicConfig.tags),
+      });
       return;
     }
 
@@ -1176,6 +1222,10 @@ function mapButtonTextToCommand(text) {
     Cloudflare: "Cloudflare",
     Shopify: "Shopify",
     "🆕 останні": "/latest",
+    "🆕 свіже": "/latest",
+    "🎯 для мене": "/latest",
+    "🧰 практика": "/practice",
+    "🗂 теми": "/topics",
     "📖 повні розбори": "/full",
     "🚨 критичні": "/p0",
     "🎨 themes": "/themes",
@@ -1194,6 +1244,7 @@ function mapButtonTextToCommand(text) {
     "✅ аудит": "/audit",
     "⚙️ settings": "/settings",
     "⚙️ налаштування": "/settings",
+    "ℹ️ допомога": "/help",
     "📊 stats": "/stats",
   };
 
@@ -1559,23 +1610,13 @@ async function sendWelcome(chatId, env, subscriber = null) {
     "",
     "━━━━━━━━━━━━━━━",
     "",
-    "📌 <b>Команди:</b>",
-    "• /latest — 7 найсвіжіших перевірених сигналів",
-    "• /full — практичний розбір першої новини",
-    "• /full 3 — практичний розбір третьої новини",
-    "• /p0 — тільки критичні зміни",
-    "• /themes — теми, Liquid, секції",
-    "• /performance — швидкість, SEO, оптимізація",
-    "• /vue — Vue і Pinia",
-    "• /nuxt — Nuxt, SSR і Nitro",
-    "• /js — JavaScript, TypeScript, Node і Vite",
-    "• /css — CSS, SCSS, Tailwind, UI та a11y",
-    "• /cloudflare — Workers та edge",
-    "• /shopify — Shopify, Liquid та API",
-    "• /digest — коротке зведення",
-    "• /audit — audit checklist",
-    "• /settings — персональні налаштування",
-    "• /help — всі команди",
+    "📌 <b>Швидка навігація:</b>",
+    "• 🆕 Свіже — останні перевірені сигнали",
+    "• 🎯 Для мене — стрічка за твоїми налаштуваннями",
+    "• 🧰 Практика — зміни з конкретною дією або чеклистом",
+    "• 🗂 Теми — Vue/Nuxt, JS/TS, CSS/UI, Testing, Shopify, Cloudflare",
+    "• 📖 Повний розбір — /full або /full 3",
+    "• 🧠 Digest — коротке зведення",
     "",
     "━━━━━━━━━━━━━━━",
     "",
@@ -1585,7 +1626,7 @@ async function sendWelcome(chatId, env, subscriber = null) {
     "",
     "━━━━━━━━━━━━━━━",
     "",
-    "💡 Використовуй кнопки нижче або напиши <b>/full</b> для повних frontend-розборів.",
+    "💡 Використовуй кнопки нижче — старі slash-команди теж залишаються сумісними.",
   ].join("\n");
 
   await sendTelegramRaw(chatId, text, env, {
@@ -1737,7 +1778,7 @@ async function sendSingleCard(chatId, env, index = 1) {
   });
 }
 
-async function sendSingleCardByReference(chatId, env, itemReference) {
+async function sendSingleCardByReference(chatId, env, itemReference, displayMeta = {}) {
   const latest = await getLatestItems(env);
   const reference = String(itemReference || "").trim();
   const item = latest.find((candidate) =>
@@ -1753,11 +1794,13 @@ async function sendSingleCardByReference(chatId, env, itemReference) {
 
   const ordered = sortItemsByDateDesc(latest);
   const index = ordered.findIndex((candidate) => candidate.itemId === item.itemId);
+  const metaIndex = displayMeta.index || index + 1;
+  const metaTotal = displayMeta.total || ordered.length;
   await sendTelegramRaw(
     chatId,
-    formatStoredFullItem(item, { index: index + 1, total: ordered.length }),
+    formatStoredFullItem(item, { index: metaIndex, total: metaTotal }),
     env,
-    { replyMarkup: buildItemInlineKeyboard(item, Math.max(0, index)) }
+    { replyMarkup: buildItemInlineKeyboard(item, Math.max(0, metaIndex - 1)) }
   );
 }
 
@@ -1839,35 +1882,22 @@ async function generateFocusedReadingMode(item, env, mode) {
 
 async function sendHelp(chatId, env) {
   const text = [
-    "⚙️ <b>FRONTEND INTELLIGENCE RADAR UA — КОМАНДИ</b>",
+    "ℹ️ <b>ЯК КОРИСТУВАТИСЯ RADAR</b>",
     "",
     "/start — почати та підписатися",
     "/latest — 7 найсвіжіших перевірених сигналів",
-    "/full — один практичний розбір без води",
-    "/full 3 — конкретний розбір зі списку",
-    "/card 3 — те саме, коротка команда для картки",
-    "/p0 — критичні зміни",
-    "/themes — теми, Liquid, секції",
-    "/performance — швидкість, SEO, оптимізація",
-    "/vue — Vue і Pinia",
-    "/nuxt — Nuxt, SSR та Nitro",
-    "/js — JavaScript, TypeScript, Node.js і Vite",
-    "/css — CSS, SCSS, Tailwind, UI та accessibility",
-    "/cloudflare — Cloudflare Workers та edge",
-    "/shopify — Shopify, Liquid, checkout та API",
-    "/digest — зведення по категоріях",
-    "/audit — audit checklist для frontend і Shopify-проєктів",
+    "/practice — тільки новини з конкретною дією або чеклистом",
+    "/topics — фільтр за екосистемою",
+    "/full або /full 3 — один точний розбір обраної новини",
+    "/digest — коротке зведення по категоріях",
     "/settings — персональні налаштування підписок",
-    "/stats — технічна статистика, тільки для адміна",
-    "/refresh — обробити наступну свіжу новину, тільки для адміна",
-    "/test-ai — перевірити AI, тільки для адміна",
     "/stop — відписатися від новин",
-    "/help — допомога",
     "",
     "━━━━━━━━━━━━━━━",
     "",
-    "📡 Бот автоматично надсилає підписникам зміни згідно з їхніми settings.",
-    "🧊 Менш важливі зміни не спамлять чат, але потрапляють у зведення.",
+    "📡 Бот показує найсвіжіші офіційні зміни й пояснює, кого вони стосуються.",
+    "🧊 Старі й малокорисні patch-оновлення відсіюються.",
+    "🔧 Старі тематичні slash-команди залишені для сумісності.",
   ].join("\n");
 
   await sendTelegramRaw(chatId, text, env, {
@@ -1886,11 +1916,9 @@ async function sendUnknownCommand(chatId, env) {
       "/latest — 7 найсвіжіших перевірених сигналів",
       "/full — один практичний розбір без води",
       "/full 3 — один розбір",
-      "/p0 — критичні зміни",
-      "/themes — теми, Liquid, секції",
-      "/performance — швидкість, SEO, оптимізація",
+      "/practice — практичні зміни",
+      "/topics — теми",
       "/digest — коротке зведення",
-      "/audit — audit checklist",
       "/settings — персональні налаштування",
       "/help — допомога",
     ].join("\n"),
@@ -4475,15 +4503,40 @@ async function answerCallbackQuery(callbackQueryId, env, text = "OK") {
 function buildMainReplyKeyboard() {
   return {
     keyboard: [
-      [{ text: "🆕 Останні" }, { text: "📖 Повні розбори" }],
-      [{ text: "💚 Vue" }, { text: "🟢 Nuxt" }],
-      [{ text: "⚡ JS/TS" }, { text: "🎨 CSS/UI" }],
-      [{ text: "🛍 Shopify" }, { text: "☁️ Cloudflare" }],
-      [{ text: "🚨 Критичні" }, { text: "🧠 Digest" }],
-      [{ text: "✅ Audit" }, { text: "⚙️ Settings" }],
+      [{ text: "🆕 Свіже" }, { text: "🎯 Для мене" }],
+      [{ text: "🧰 Практика" }, { text: "🗂 Теми" }],
+      [{ text: "⚙️ Налаштування" }, { text: "ℹ️ Допомога" }],
     ],
     resize_keyboard: true,
     one_time_keyboard: false,
+  };
+}
+
+const TOPIC_MENU = [
+  { id: "vue", label: "Vue / Nuxt", title: "💚 VUE / NUXT", emptyTitle: "💚 Свіжих Vue/Nuxt новин немає", tags: ["vue", "nuxt", "pinia", "ssr", "nitro"] },
+  { id: "js", label: "JS / TS / Vite", title: "⚡ JS / TS / VITE", emptyTitle: "⚡ Свіжих JS/TS/Vite новин немає", tags: ["javascript", "typescript", "node", "vite", "vitest"] },
+  { id: "css", label: "CSS / Tailwind / UI", title: "🎨 CSS / TAILWIND / UI", emptyTitle: "🎨 Свіжих CSS/UI новин немає", tags: ["css", "scss", "sass", "tailwind", "ui", "a11y"] },
+  { id: "testing", label: "Testing / Browser", title: "🧪 TESTING / BROWSER", emptyTitle: "🧪 Свіжих Testing/Browser новин немає", tags: ["testing", "playwright", "vitest", "browser"] },
+  { id: "shopify", label: "Shopify", title: "🛍 SHOPIFY", emptyTitle: "🛍 Свіжих Shopify новин немає", tags: ["shopify", "liquid", "admin-api", "storefront-api", "checkout"] },
+  { id: "cloudflare", label: "Cloudflare / Edge", title: "☁️ CLOUDFLARE / EDGE", emptyTitle: "☁️ Свіжих Cloudflare новин немає", tags: ["cloudflare", "workers", "edge"] },
+];
+
+async function sendTopics(chatId, env) {
+  await sendTelegramRaw(chatId, "🗂 <b>ОБЕРИ ТЕМУ</b>\n\nПокажу тільки свіжі перевірені новини з обраної екосистеми.", env, {
+    replyMarkup: buildTopicsInlineKeyboard(),
+  });
+}
+
+function buildTopicsInlineKeyboard() {
+  return {
+    inline_keyboard: [
+      ...TOPIC_MENU.reduce((rows, topic, index) => {
+        if (index % 2 === 0) rows.push([]);
+        rows[rows.length - 1].push({ text: topic.label, callback_data: `topic:${topic.id}` });
+        return rows;
+      }, []),
+      [{ text: "🆕 Свіже", callback_data: "latest" }],
+    ],
   };
 }
 
@@ -4498,11 +4551,11 @@ function buildListInlineKeyboard(items) {
     const itemReference = String(item.itemId || "").slice(0, 16);
     return [{
       text: `📖 Розбір ${index + 1}`,
-      callback_data: itemReference ? `article:${itemReference}` : `card:${index}`,
+      callback_data: itemReference
+        ? `article:${itemReference}:${index + 1}:${Math.min(items.length, LATEST_DISPLAY_LIMIT)}`
+        : `card:${index}`,
     }];
   });
-
-  rows.push([{ text: "✅ Audit checklist", callback_data: "audit" }]);
 
   return {
     inline_keyboard: rows,
@@ -4513,12 +4566,8 @@ function buildItemInlineKeyboard(item, index = 0) {
   const itemReference = String(item.itemId || "").slice(0, 16);
   const keyboard = [
     [
-      { text: "🔗 Source", url: item.url },
-      { text: "✅ Audit", callback_data: "audit" },
-    ],
-    [
-      { text: "🆕 Latest", callback_data: "latest" },
-      { text: "📖 Full", callback_data: "full" },
+      { text: "🔗 Джерело", url: item.url },
+      { text: "🆕 Свіже", callback_data: "latest" },
     ],
   ];
 
@@ -4539,13 +4588,6 @@ function buildItemInlineKeyboard(item, index = 0) {
     keyboard.unshift([{ text: "🤔 Не зрозумів", callback_data: `feedback:x:${itemReference}` }]);
   }
 
-  if (Number.isFinite(index)) {
-    keyboard.unshift([{
-      text: `📖 Поточний розбір ${index + 1}`,
-      callback_data: itemReference ? `article:${itemReference}` : `card:${index}`,
-    }]);
-  }
-
   return {
     inline_keyboard: keyboard,
   };
@@ -4554,8 +4596,7 @@ function buildItemInlineKeyboard(item, index = 0) {
 function buildDigestInlineKeyboard() {
   return {
     inline_keyboard: [
-      [{ text: "📖 Full", callback_data: "full" }, { text: "✅ Audit", callback_data: "audit" }],
-      [{ text: "🆕 Latest", callback_data: "latest" }],
+      [{ text: "🆕 Свіже", callback_data: "latest" }, { text: "🗂 Теми", callback_data: "topics" }],
     ],
   };
 }
@@ -4563,7 +4604,7 @@ function buildDigestInlineKeyboard() {
 function buildAuditInlineKeyboard() {
   return {
     inline_keyboard: [
-      [{ text: "🆕 Latest", callback_data: "latest" }, { text: "📖 Full", callback_data: "full" }],
+      [{ text: "🆕 Свіже", callback_data: "latest" }, { text: "🗂 Теми", callback_data: "topics" }],
     ],
   };
 }
@@ -4571,7 +4612,7 @@ function buildAuditInlineKeyboard() {
 function buildAdminInlineKeyboard() {
   return {
     inline_keyboard: [
-      [{ text: "🆕 Latest", callback_data: "latest" }, { text: "✅ Audit", callback_data: "audit" }],
+      [{ text: "🆕 Свіже", callback_data: "latest" }, { text: "🗂 Теми", callback_data: "topics" }],
     ],
   };
 }
@@ -4698,7 +4739,13 @@ export const __test = {
   createFallbackStructuredSummary,
   inferPriority,
   isPublishableItem,
+  buildMainReplyKeyboard,
+  buildTelegramCommandMenu,
+  buildTopicsInlineKeyboard,
   buildListInlineKeyboard,
   buildItemInlineKeyboard,
+  buildDigestInlineKeyboard,
+  buildAuditInlineKeyboard,
+  buildAdminInlineKeyboard,
 };
 

@@ -54,7 +54,7 @@ import { createHttpHandlers } from "./src/http/handlers.js";
 import { createRunPipeline } from "./src/runtime/run-pipeline.js";
 
 const SERVICE_NAME = "Frontend Intelligence Radar UA";
-const SERVICE_VERSION = "v15.0";
+const SERVICE_VERSION = "v16.0";
 
 const MAX_ITEMS_PER_RUN = 3;
 const MIN_PUBLISH_QUALITY = 70;
@@ -77,7 +77,7 @@ const SUBSCRIBERS_KEY = "telegram:subscribers";
 const BOOTSTRAP_CHECKED_KEY = "latest:bootstrap:checked";
 const RUN_LAST_KEY = "run:last";
 const TELEGRAM_PROFILE_VERSION_KEY = "telegram:profile:version";
-const TELEGRAM_PROFILE_VERSION = "v15";
+const TELEGRAM_PROFILE_VERSION = "v16";
 
 const LATEST_ITEMS_LIMIT = 50;
 const DIGEST_ITEMS_LIMIT = 60;
@@ -608,7 +608,7 @@ async function sendWelcome(chatId, env, subscriber = null) {
   const text = [
     greeting,
     "",
-    "Я відстежую офіційні Shopify, Vue, Nuxt, Pinia, Vite, JavaScript/TypeScript, CSS/SCSS, Tailwind, Node.js, MDN і Cloudflare оновлення та перекладаю їх у практичні задачі:",
+    "Я відстежую офіційні оновлення frontend, AI, browser, runtime, Git/DevOps та Shopify-екосистем і перекладаю їх у практичні задачі:",
     "• що змінилося",
     "• наскільки це критично",
     "• де може зачепити тему, Liquid, API, checkout, SEO або автоматизації",
@@ -626,7 +626,7 @@ async function sendWelcome(chatId, env, subscriber = null) {
     "• 🆕 Свіже — останні перевірені сигнали",
     "• 🎯 Для мене — стрічка за твоїми налаштуваннями",
     "• 🧰 Практика — зміни з конкретною дією або чеклистом",
-    "• 🗂 Теми — Vue/Nuxt, JS/TS, CSS/UI, Testing, Shopify, Cloudflare",
+    "• 🗂 Теми — Frontend, AI, Toolchain, Git/DevOps, Browser, Shopify, Cloudflare",
     "• 📖 Повний розбір — /full або /full 3",
     "• 🧠 Digest — коротке зведення",
     "",
@@ -1373,7 +1373,7 @@ function formatAuditMessage(groups) {
   return [
     "✅ <b>FRONTEND AUDIT CHECKLIST</b>",
     "",
-    "Автоматично зібрано з останніх офіційних frontend і Shopify змін.",
+    "Автоматично зібрано з останніх офіційних змін у frontend, AI, toolchain, Git/DevOps і product ecosystems.",
     "",
     "━━━━━━━━━━━━━━━",
     "",

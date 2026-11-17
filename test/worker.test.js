@@ -761,6 +761,8 @@ test("Telegram command menu exposes only the user-facing navigation", () => {
   assert.ok(!names.includes("card"));
   assert.ok(!names.includes("stats"));
   assert.ok(!names.includes("refresh"));
+  assert.ok(commands.every((command) => !/shopify/i.test(command.description)));
+  assert.ok(commands.some((command) => command.command === "topics" && /технологічну/i.test(command.description)));
 });
 
 test("fresh feed order is date-first even when an older item has stronger relevance", () => {

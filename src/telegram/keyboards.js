@@ -3,6 +3,9 @@ export const TOPIC_MENU = [
   { id: "js", label: "JS / TS / Vite", title: "⚡ JS / TS / VITE", emptyTitle: "⚡ Свіжих JS/TS/Vite новин немає", tags: ["javascript", "typescript", "node", "vite", "vitest"] },
   { id: "css", label: "CSS / Tailwind / UI", title: "🎨 CSS / TAILWIND / UI", emptyTitle: "🎨 Свіжих CSS/UI новин немає", tags: ["css", "scss", "sass", "tailwind", "ui", "a11y"] },
   { id: "testing", label: "Testing / Browser", title: "🧪 TESTING / BROWSER", emptyTitle: "🧪 Свіжих Testing/Browser новин немає", tags: ["testing", "playwright", "vitest", "browser"] },
+  { id: "ai", label: "AI / Codex / Claude", title: "🤖 AI / CODEX / CLAUDE", emptyTitle: "🤖 Свіжих AI-новин немає", tags: ["ai", "openai", "codex", "claude", "anthropic", "models", "api"] },
+  { id: "toolchain", label: "Toolchain / Runtime", title: "🧰 TOOLCHAIN / RUNTIME", emptyTitle: "🧰 Свіжих Toolchain новин немає", tags: ["node", "npm", "pnpm", "bun", "homebrew", "build-tools", "runtime"] },
+  { id: "git", label: "Git / DevOps", title: "🔀 GIT / DEVOPS", emptyTitle: "🔀 Свіжих Git/DevOps новин немає", tags: ["git", "github", "gitlab", "devops", "ci-cd", "open-source", "platform"] },
   { id: "shopify", label: "Shopify", title: "🛍 SHOPIFY", emptyTitle: "🛍 Свіжих Shopify новин немає", tags: ["shopify", "liquid", "admin-api", "storefront-api", "checkout"] },
   { id: "cloudflare", label: "Cloudflare / Edge", title: "☁️ CLOUDFLARE / EDGE", emptyTitle: "☁️ Свіжих Cloudflare новин немає", tags: ["cloudflare", "workers", "edge"] },
 ];
@@ -107,6 +110,7 @@ export function buildSettingsInlineKeyboard(preferences) {
       ],
       [topicButton("Vue", "vue"), topicButton("Nuxt", "nuxt"), topicButton("Pinia", "pinia")],
       [topicButton("JS/TS", "javascript"), topicButton("CSS/UI", "css"), topicButton("Tailwind", "tailwind")],
+      [topicButton("AI", "ai"), topicButton("Toolchain", "build-tools"), topicButton("Git/DevOps", "devops")],
       [topicButton("Shopify", "shopify"), topicButton("Cloudflare", "cloudflare")],
       [{ text: "🧹 Очистити теми", callback_data: "settings:topic:clear" }],
     ],

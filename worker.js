@@ -49,7 +49,7 @@ const APPROVED_ARTICLE_HOSTS = new Set([
 ]);
 
 const SERVICE_NAME = "Frontend Intelligence Radar UA";
-const SERVICE_VERSION = "v14.0";
+const SERVICE_VERSION = "v15.0";
 
 const MAX_ITEMS_PER_RUN = 3;
 const MIN_PUBLISH_QUALITY = 70;
@@ -944,6 +944,25 @@ async function handleTelegramWebhook(update, env) {
     return;
   }
 
+  if (command === "/practice") {
+    await saveSubscriber(chatId, message, env);
+    await sendFilteredLatest(chatId, env, {
+      title: "🧰 ПРАКТИЧНІ ЗМІНИ",
+      emptyTitle: "🧰 Практичних змін поки немає",
+      predicate: (item) => Boolean(
+        (item.todayAction || item.clientTask) &&
+        ((item.applicationItems || []).length || (item.checklistItems || []).length)
+      ),
+    });
+    return;
+  }
+
+  if (command === "/topics") {
+    await saveSubscriber(chatId, message, env);
+    await sendTopics(chatId, env);
+    return;
+  }
+
   if (command === "/full") {
     await saveSubscriber(chatId, message, env);
     await sendFullLatest(chatId, env, { singleIndex: parseOptionalIndex(args[0]) });
@@ -1070,6 +1089,29 @@ async function handleTelegramCallback(callbackQuery, env) {
       return;
     }
 
+    if (data === "topics") {
+      await answerCallbackQuery(callbackQuery.id, env, "Обирай тему");
+      await sendTopics(chatId, env);
+      return;
+    }
+
+    if (data.startsWith("topic:")) {
+      const topic = data.slice("topic:".length);
+      const topicConfig = TOPIC_MENU.find((item) => item.id === topic);
+      if (!topicConfig) {
+        await answerCallbackQuery(callbackQuery.id, env, "Тему не знайдено");
+        return;
+      }
+
+      await answerCallbackQuery(callbackQuery.id, env, `Тема: ${topicConfig.label}`);
+      await sendFilteredLatest(chatId, env, {
+        title: topicConfig.title,
+        emptyTitle: topicConfig.emptyTitle,
+        predicate: (item) => matchesDevTags(item, topicConfig.tags),
+      });
+      return;
+    }
+
     if (data === "full") {
       await answerCallbackQuery(callbackQuery.id, env, "Повні розбори");
       await sendFullLatest(chatId, env);
@@ -1176,6 +1218,10 @@ function mapButtonTextToCommand(text) {
     Cloudflare: "Cloudflare",
     Shopify: "Shopify",
     "🆕 останні": "/latest",
+    "🆕 свіже": "/latest",
+    "🎯 для мене": "/latest",
+    "🧰 практика": "/practice",
+    "🗂 теми": "/topics",
     "📖 повні розбори": "/full",
     "🚨 критичні": "/p0",
     "🎨 themes": "/themes",
@@ -1194,6 +1240,7 @@ function mapButtonTextToCommand(text) {
     "✅ аудит": "/audit",
     "⚙️ settings": "/settings",
     "⚙️ налаштування": "/settings",
+    "ℹ️ допомога": "/help",
     "📊 stats": "/stats",
   };
 
@@ -1559,23 +1606,13 @@ async function sendWelcome(chatId, env, subscriber = null) {
     "",
     "━━━━━━━━━━━━━━━",
     "",
-    "📌 <b>Команди:</b>",
-    "• /latest — 7 найсвіжіших перевірених сигналів",
-    "• /full — практичний розбір першої новини",
-    "• /full 3 — практичний розбір третьої новини",
-    "• /p0 — тільки критичні зміни",
-    "• /themes — теми, Liquid, секції",
-    "• /performance — швидкість, SEO, оптимізація",
-    "• /vue — Vue і Pinia",
-    "• /nuxt — Nuxt, SSR і Nitro",
-    "• /js — JavaScript, TypeScript, Node і Vite",
-    "• /css — CSS, SCSS, Tailwind, UI та a11y",
-    "• /cloudflare — Workers та edge",
-    "• /shopify — Shopify, Liquid та API",
-    "• /digest — коротке зведення",
-    "• /audit — audit checklist",
-    "• /settings — персональні налаштування",
-    "• /help — всі команди",
+    "📌 <b>Швидка навігація:</b>",
+    "• 🆕 Свіже — останні перевірені сигнали",
+    "• 🎯 Для мене — стрічка за твоїми налаштуваннями",
+    "• 🧰 Практика — зміни з конкретною дією або чеклистом",
+    "• 🗂 Теми — Vue/Nuxt, JS/TS, CSS/UI, Testing, Shopify, Cloudflare",
+    "• 📖 Повний розбір — /full або /full 3",
+    "• 🧠 Digest — коротке зведення",
     "",
     "━━━━━━━━━━━━━━━",
     "",
@@ -1585,7 +1622,7 @@ async function sendWelcome(chatId, env, subscriber = null) {
     "",
     "━━━━━━━━━━━━━━━",
     "",
-    "💡 Використовуй кнопки нижче або напиши <b>/full</b> для повних frontend-розборів.",
+    "💡 Використовуй кнопки нижче — старі slash-команди теж залишаються сумісними.",
   ].join("\n");
 
   await sendTelegramRaw(chatId, text, env, {
@@ -1839,35 +1876,22 @@ async function generateFocusedReadingMode(item, env, mode) {
 
 async function sendHelp(chatId, env) {
   const text = [
-    "⚙️ <b>FRONTEND INTELLIGENCE RADAR UA — КОМАНДИ</b>",
+    "ℹ️ <b>ЯК КОРИСТУВАТИСЯ RADAR</b>",
     "",
     "/start — почати та підписатися",
     "/latest — 7 найсвіжіших перевірених сигналів",
-    "/full — один практичний розбір без води",
-    "/full 3 — конкретний розбір зі списку",
-    "/card 3 — те саме, коротка команда для картки",
-    "/p0 — критичні зміни",
-    "/themes — теми, Liquid, секції",
-    "/performance — швидкість, SEO, оптимізація",
-    "/vue — Vue і Pinia",
-    "/nuxt — Nuxt, SSR та Nitro",
-    "/js — JavaScript, TypeScript, Node.js і Vite",
-    "/css — CSS, SCSS, Tailwind, UI та accessibility",
-    "/cloudflare — Cloudflare Workers та edge",
-    "/shopify — Shopify, Liquid, checkout та API",
-    "/digest — зведення по категоріях",
-    "/audit — audit checklist для frontend і Shopify-проєктів",
+    "/practice — тільки новини з конкретною дією або чеклистом",
+    "/topics — фільтр за екосистемою",
+    "/full або /full 3 — один точний розбір обраної новини",
+    "/digest — коротке зведення по категоріях",
     "/settings — персональні налаштування підписок",
-    "/stats — технічна статистика, тільки для адміна",
-    "/refresh — обробити наступну свіжу новину, тільки для адміна",
-    "/test-ai — перевірити AI, тільки для адміна",
     "/stop — відписатися від новин",
-    "/help — допомога",
     "",
     "━━━━━━━━━━━━━━━",
     "",
-    "📡 Бот автоматично надсилає підписникам зміни згідно з їхніми settings.",
-    "🧊 Менш важливі зміни не спамлять чат, але потрапляють у зведення.",
+    "📡 Бот показує найсвіжіші офіційні зміни й пояснює, кого вони стосуються.",
+    "🧊 Старі й малокорисні patch-оновлення відсіюються.",
+    "🔧 Старі тематичні slash-команди залишені для сумісності.",
   ].join("\n");
 
   await sendTelegramRaw(chatId, text, env, {
@@ -1886,11 +1910,9 @@ async function sendUnknownCommand(chatId, env) {
       "/latest — 7 найсвіжіших перевірених сигналів",
       "/full — один практичний розбір без води",
       "/full 3 — один розбір",
-      "/p0 — критичні зміни",
-      "/themes — теми, Liquid, секції",
-      "/performance — швидкість, SEO, оптимізація",
+      "/practice — практичні зміни",
+      "/topics — теми",
       "/digest — коротке зведення",
-      "/audit — audit checklist",
       "/settings — персональні налаштування",
       "/help — допомога",
     ].join("\n"),
@@ -4475,15 +4497,40 @@ async function answerCallbackQuery(callbackQueryId, env, text = "OK") {
 function buildMainReplyKeyboard() {
   return {
     keyboard: [
-      [{ text: "🆕 Останні" }, { text: "📖 Повні розбори" }],
-      [{ text: "💚 Vue" }, { text: "🟢 Nuxt" }],
-      [{ text: "⚡ JS/TS" }, { text: "🎨 CSS/UI" }],
-      [{ text: "🛍 Shopify" }, { text: "☁️ Cloudflare" }],
-      [{ text: "🚨 Критичні" }, { text: "🧠 Digest" }],
-      [{ text: "✅ Audit" }, { text: "⚙️ Settings" }],
+      [{ text: "🆕 Свіже" }, { text: "🎯 Для мене" }],
+      [{ text: "🧰 Практика" }, { text: "🗂 Теми" }],
+      [{ text: "⚙️ Налаштування" }, { text: "ℹ️ Допомога" }],
     ],
     resize_keyboard: true,
     one_time_keyboard: false,
+  };
+}
+
+const TOPIC_MENU = [
+  { id: "vue", label: "Vue / Nuxt", title: "💚 VUE / NUXT", emptyTitle: "💚 Свіжих Vue/Nuxt новин немає", tags: ["vue", "nuxt", "pinia", "ssr", "nitro"] },
+  { id: "js", label: "JS / TS / Vite", title: "⚡ JS / TS / VITE", emptyTitle: "⚡ Свіжих JS/TS/Vite новин немає", tags: ["javascript", "typescript", "node", "vite", "vitest"] },
+  { id: "css", label: "CSS / Tailwind / UI", title: "🎨 CSS / TAILWIND / UI", emptyTitle: "🎨 Свіжих CSS/UI новин немає", tags: ["css", "scss", "sass", "tailwind", "ui", "a11y"] },
+  { id: "testing", label: "Testing / Browser", title: "🧪 TESTING / BROWSER", emptyTitle: "🧪 Свіжих Testing/Browser новин немає", tags: ["testing", "playwright", "vitest", "browser"] },
+  { id: "shopify", label: "Shopify", title: "🛍 SHOPIFY", emptyTitle: "🛍 Свіжих Shopify новин немає", tags: ["shopify", "liquid", "admin-api", "storefront-api", "checkout"] },
+  { id: "cloudflare", label: "Cloudflare / Edge", title: "☁️ CLOUDFLARE / EDGE", emptyTitle: "☁️ Свіжих Cloudflare новин немає", tags: ["cloudflare", "workers", "edge"] },
+];
+
+async function sendTopics(chatId, env) {
+  await sendTelegramRaw(chatId, "🗂 <b>ОБЕРИ ТЕМУ</b>\n\nПокажу тільки свіжі перевірені новини з обраної екосистеми.", env, {
+    replyMarkup: buildTopicsInlineKeyboard(),
+  });
+}
+
+function buildTopicsInlineKeyboard() {
+  return {
+    inline_keyboard: [
+      ...TOPIC_MENU.reduce((rows, topic, index) => {
+        if (index % 2 === 0) rows.push([]);
+        rows[rows.length - 1].push({ text: topic.label, callback_data: `topic:${topic.id}` });
+        return rows;
+      }, []),
+      [{ text: "🆕 Свіже", callback_data: "latest" }],
+    ],
   };
 }
 
@@ -4501,8 +4548,6 @@ function buildListInlineKeyboard(items) {
       callback_data: itemReference ? `article:${itemReference}` : `card:${index}`,
     }];
   });
-
-  rows.push([{ text: "✅ Audit checklist", callback_data: "audit" }]);
 
   return {
     inline_keyboard: rows,
@@ -4698,6 +4743,8 @@ export const __test = {
   createFallbackStructuredSummary,
   inferPriority,
   isPublishableItem,
+  buildMainReplyKeyboard,
+  buildTopicsInlineKeyboard,
   buildListInlineKeyboard,
   buildItemInlineKeyboard,
 };

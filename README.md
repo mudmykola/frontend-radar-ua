@@ -4,7 +4,7 @@ Cloudflare Worker і Telegram-бот, який стежить за офіцій�
 
 Shopify — лише одне з джерел. Радар також охоплює Vue, Nuxt, Pinia, Vite, Vitest, Playwright, Nitro, Nuxt UI, JavaScript, TypeScript, CSS, Sass, Tailwind, Node.js, MDN, web.dev і Cloudflare Workers.
 
-## Поточна версія v14
+## Поточна версія v15
 
 - показує лише офіційні матеріали за останні сім днів;
 - сортує новини за реальною датою публікації;
@@ -15,6 +15,9 @@ Shopify — лише одне з джерел. Радар також охопл�
 - обробляє до трьох нових матеріалів за cron-запуск;
 - балансує індексацію між екосистемами, щоб Cloudflare або Shopify не витісняли всі інші теми;
 - зберігає окремі записи в Cloudflare KV без legacy aggregate news arrays.
+- має компактне Telegram-меню з шістьма діями: `Свіже`, `Для мене`, `Практика`, `Теми`, `Налаштування`, `Допомога`;
+- відкриває теми другим рівнем inline-кнопок, щоб не змішувати всі екосистеми в одному меню;
+- залишає старі slash-команди (`/vue`, `/nuxt`, `/js`, `/css`, `/shopify`, `/cloudflare`) для сумісності.
 
 ## Формат корисної новини
 
@@ -27,6 +30,8 @@ Shopify Developer Changelog, Vue і Nuxt official blogs, Vue/Nuxt/Pinia/Vite/Nit
 ## Telegram-команди
 
 - `/latest` — сім найсвіжіших перевірених сигналів;
+- `/practice` — лише новини з конкретною дією або чеклистом;
+- `/topics` — другий рівень фільтрації за екосистемою;
 - `/full` або `/full 3` — один практичний розбір;
 - `/vue`, `/nuxt`, `/js`, `/css` — тематичні frontend-потоки;
 - `/shopify`, `/cloudflare` — відповідні екосистеми;

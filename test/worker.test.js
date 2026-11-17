@@ -693,3 +693,20 @@ test("full buttons reference the exact article instead of its changing list posi
   assert.equal(keyboard[1][0].callback_data, "article:bbbbbbbbbbbbbbbb");
   assert.notEqual(keyboard[0][0].callback_data, "card:0");
 });
+
+test("v15 keeps the main Telegram menu compact and groups topics separately", () => {
+  const mainKeyboard = __test.buildMainReplyKeyboard().keyboard.flat().map((button) => button.text);
+  assert.deepEqual(mainKeyboard, [
+    "🆕 Свіже",
+    "🎯 Для мене",
+    "🧰 Практика",
+    "🗂 Теми",
+    "⚙️ Налаштування",
+    "ℹ️ Допомога",
+  ]);
+
+  const topicButtons = __test.buildTopicsInlineKeyboard().inline_keyboard.flat();
+  assert.ok(topicButtons.some((button) => button.callback_data === "topic:vue"));
+  assert.ok(topicButtons.some((button) => button.callback_data === "topic:shopify"));
+  assert.ok(topicButtons.some((button) => button.callback_data === "latest"));
+});

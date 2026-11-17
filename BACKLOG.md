@@ -2,7 +2,21 @@
 
 ## In Progress
 
-No active tasks.
+## Done
+
+### Telegram: Simplify bot navigation v15
+
+- Priority: High
+- Labels: `backend`, `api`, `UI`, `Improvement`, `Content`
+- Assignee: tovarinfobud
+- Status: Done
+- Scope:
+  - replace the crowded persistent keyboard with six clear actions;
+  - add a second-level inline topics menu;
+  - add a practical-only feed shortcut;
+  - keep legacy slash commands working for compatibility;
+  - update README, tests and Dev Log.
+- Completion: Compact v15 keyboard, inline topic menu, `/practice`, concise help and welcome copy are implemented. `pnpm run check` and 35 tests pass. Production deployment is intentionally pending explicit user confirmation.
 
 ## Backlog
 
@@ -16,8 +30,6 @@ No active tasks.
   - revoke the Gemini API credential disclosed in conversation;
   - create a replacement credential without posting it in chat;
   - replace the `AI_API_KEY` Cloudflare secret and verify inference.
-
-## Done
 
 ### Content: Diversify official frontend sources v14
 

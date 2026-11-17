@@ -7,16 +7,26 @@ import {
 
 const CONTENT_SOURCES = [
   { id: "shopify", name: "Shopify Developer Changelog", feedUrl: "https://shopify.dev/changelog/feed.xml", format: "rss", tags: ["shopify"] },
+  { id: "vue-blog", name: "Vue Official Blog", feedUrl: "https://blog.vuejs.org/feed.rss", format: "rss", tags: ["vue", "javascript", "ui"] },
   { id: "vue", name: "Vue Releases", feedUrl: "https://github.com/vuejs/core/releases.atom", format: "atom", tags: ["vue", "javascript", "ui"] },
+  { id: "nuxt-blog", name: "Nuxt Official Blog", feedUrl: "https://nuxt.com/blog/rss.xml", format: "rss", tags: ["nuxt", "vue", "ssr"] },
   { id: "nuxt", name: "Nuxt Releases", feedUrl: "https://github.com/nuxt/nuxt/releases.atom", format: "atom", tags: ["nuxt", "vue", "ssr"] },
+  { id: "nuxt-ui", name: "Nuxt UI Releases", feedUrl: "https://github.com/nuxt/ui/releases.atom", format: "atom", tags: ["nuxt", "vue", "ui", "tailwind"] },
+  { id: "nitro", name: "Nitro Releases", feedUrl: "https://github.com/nitrojs/nitro/releases.atom", format: "atom", tags: ["nuxt", "nitro", "ssr", "javascript"] },
   { id: "pinia", name: "Pinia Releases", feedUrl: "https://github.com/vuejs/pinia/releases.atom", format: "atom", tags: ["pinia", "vue", "state-management"] },
   { id: "vite", name: "Vite Releases", feedUrl: "https://github.com/vitejs/vite/releases.atom", format: "atom", tags: ["vite", "javascript", "build-tools"] },
+  { id: "vite-blog", name: "Vite Official Blog", feedUrl: "https://vite.dev/blog.rss", format: "rss", tags: ["vite", "javascript", "build-tools"] },
+  { id: "vitest", name: "Vitest Releases", feedUrl: "https://github.com/vitest-dev/vitest/releases.atom", format: "atom", tags: ["vitest", "vite", "javascript", "testing"] },
+  { id: "playwright", name: "Playwright Releases", feedUrl: "https://github.com/microsoft/playwright/releases.atom", format: "atom", tags: ["playwright", "javascript", "testing", "browser"] },
   { id: "tailwind", name: "Tailwind CSS Releases", feedUrl: "https://github.com/tailwindlabs/tailwindcss/releases.atom", format: "atom", tags: ["tailwind", "css", "ui"] },
+  { id: "tailwind-blog", name: "Tailwind CSS Blog", feedUrl: "https://tailwindcss.com/feeds/feed.xml", format: "rss", tags: ["tailwind", "css", "ui"] },
   { id: "typescript", name: "TypeScript Releases", feedUrl: "https://github.com/microsoft/TypeScript/releases.atom", format: "atom", tags: ["typescript", "javascript"] },
   { id: "sass", name: "Sass Releases", feedUrl: "https://github.com/sass/dart-sass/releases.atom", format: "atom", tags: ["sass", "scss", "css"] },
   { id: "node", name: "Node.js Releases", feedUrl: "https://github.com/nodejs/node/releases.atom", format: "atom", tags: ["node", "javascript", "runtime"] },
   { id: "mdn", name: "MDN Blog", feedUrl: "https://developer.mozilla.org/en-US/blog/rss.xml", format: "rss", tags: ["javascript", "css", "web-platform", "a11y"] },
+  { id: "webdev", name: "web.dev Blog", feedUrl: "https://web.dev/static/blog/feed.xml", format: "rss", tags: ["javascript", "css", "web-platform", "performance", "a11y"] },
   { id: "cloudflare", name: "Cloudflare Developer Changelog", feedUrl: "https://developers.cloudflare.com/changelog/rss/index.xml", format: "rss", tags: ["cloudflare", "workers", "edge"] },
+  { id: "cloudflare-blog", name: "Cloudflare Blog", feedUrl: "https://blog.cloudflare.com/rss/", format: "rss", tags: ["cloudflare", "workers", "edge", "security", "web-platform"] },
 ];
 const APPROVED_ARTICLE_HOSTS = new Set([
   "shopify.dev",
@@ -33,10 +43,13 @@ const APPROVED_ARTICLE_HOSTS = new Set([
   "nodejs.org",
   "developer.mozilla.org",
   "developers.cloudflare.com",
+  "blog.cloudflare.com",
+  "web.dev",
+  "vitest.dev",
 ]);
 
 const SERVICE_NAME = "Frontend Intelligence Radar UA";
-const SERVICE_VERSION = "v13.0";
+const SERVICE_VERSION = "v14.0";
 
 const MAX_ITEMS_PER_RUN = 3;
 const MIN_PUBLISH_QUALITY = 70;
@@ -56,7 +69,7 @@ const SUBSCRIBERS_KEY = "telegram:subscribers";
 const BOOTSTRAP_CHECKED_KEY = "latest:bootstrap:checked";
 const RUN_LAST_KEY = "run:last";
 const TELEGRAM_PROFILE_VERSION_KEY = "telegram:profile:version";
-const TELEGRAM_PROFILE_VERSION = "v13";
+const TELEGRAM_PROFILE_VERSION = "v14";
 
 const LATEST_ITEMS_LIMIT = 50;
 const DIGEST_ITEMS_LIMIT = 60;
@@ -82,6 +95,7 @@ const ARTICLE_FETCH_TIMEOUT_MS = 10000;
 const FEED_FETCH_TIMEOUT_MS = 12000;
 const MAX_FEED_BYTES = 1_500_000;
 const MAX_ITEMS_PER_SOURCE = 12;
+const MAX_INDEXED_ITEMS_PER_SOURCE = 4;
 const AI_MAX_RETRIES = 3;
 const AI_RETRY_BASE_DELAY_MS = 750;
 const AI_RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
@@ -770,7 +784,7 @@ async function indexContentSources(env) {
   const recentItems = rankFeedItems(
     filterFreshFeedItems(filterItemsByLookback(allItems, LOOKBACK_DAYS)).filter(isHighSignalFeedItem)
   );
-  const indexedItems = recentItems.slice(0, LATEST_ITEMS_LIMIT);
+  const indexedItems = balanceItemsBySource(recentItems, MAX_INDEXED_ITEMS_PER_SOURCE).slice(0, LATEST_ITEMS_LIMIT);
   await indexFreshFeedItems(indexedItems, env);
   return {
     items: recentItems,
@@ -778,6 +792,17 @@ async function indexContentSources(env) {
     indexed: indexedItems.length,
     sources: new Set(indexedItems.map((item) => item.sourceId)).size,
   };
+}
+
+function balanceItemsBySource(items, perSourceLimit = MAX_INDEXED_ITEMS_PER_SOURCE) {
+  const buckets = new Map();
+  for (const item of items || []) {
+    const sourceId = item.sourceId || item.source || "unknown";
+    const bucket = buckets.get(sourceId) || [];
+    if (bucket.length < perSourceLimit) bucket.push(item);
+    buckets.set(sourceId, bucket);
+  }
+  return rankFeedItems([...buckets.values()].flat());
 }
 
 function buildRunResultItem(item, meta = {}) {
@@ -2440,13 +2465,15 @@ function isHighSignalFeedItem(item) {
   const text = buildSearchText(item);
   const important = /security advisory|security release|vulnerab|\bcve-?\d*|breaking change|deprecat|migration required|critical/i.test(text);
   const prerelease = /\b(alpha|beta|rc|nightly|canary|snapshot|next)\b/i.test(item.title || "");
-  const routineNodePatch = item.sourceId === "node" && /^node\.js v?\d+\.\d+\.\d+\b/i.test(item.title || "");
+  const routineNodePatch = item.sourceId === "node" && /(?:node\.js\s+)?v?\d+\.\d+\.\d+\b/i.test(item.title || "") && !/major|minor|security|vulnerab|breaking|deprecat/i.test(text);
+  const routineToolPatch = ["vite", "sass", "playwright", "nitro", "nuxt-ui", "vitest"].includes(item.sourceId) && /^v?\d+\.\d+\.\d+\b/i.test(item.title || "") && !/security|vulnerab|breaking|deprecat|migration/i.test(text);
   const irrelevantCloudflare = item.sourceId === "cloudflare" && /cloudflare one client|\bcasb\b|zero trust|saved login profiles|warp client/i.test(text);
   const genericReleaseStub = /^(?:v|dart sass |sass-api-)?\d+\.\d+\.\d+(?:[-+].*)?$/i.test(item.title || "") &&
     /refer to .*changelog|committer metadata|creating a tag/i.test(cleanHtml(item.summary || ""));
 
   if (prerelease && !important) return false;
   if (routineNodePatch && !important) return false;
+  if (routineToolPatch && !important) return false;
   if (irrelevantCloudflare && !important) return false;
   if (genericReleaseStub && !important) return false;
   return Boolean(item.title && item.url && item.publishedAt);
@@ -4666,6 +4693,7 @@ export const __test = {
   parseRssFeed,
   parseAtomFeed,
   rankFeedItems,
+  balanceItemsBySource,
   isHighSignalFeedItem,
   createFallbackStructuredSummary,
   inferPriority,

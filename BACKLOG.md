@@ -4,6 +4,22 @@
 
 ## Done
 
+### [GH #7] Architecture: Extract Telegram domain, subscriber storage and delivery flows
+
+- Priority: High
+- Labels: `core`, `backend`, `api`, `Refactor`, `Improvement`
+- Assignee: mudmykola
+- Status: Done
+- Completion: Extracted subscriber/preferences/feedback repository, Telegram delivery policy, webhook idempotency processor, update dispatcher and Telegram transport boundaries. Preserved stable callbacks, 48-hour freshness, legacy commands and subscriber failure isolation. 72 tests pass; production deploy remains a separate explicit step.
+
+### Deployment: Make ship health verification resilient v15.4
+
+- Priority: High
+- Labels: `backend`, `Deployment`, `Improvement`, `DX`
+- Assignee: mudmykola
+- Status: Done
+- Completion: Replaced the single curl health check with a retrying Node health verifier. `pnpm run ship` now preserves successful deploy status when local DNS cannot resolve the Worker; `pnpm run verify:production` remains a strict health gate.
+
 ### [GH #8] Architecture: Extract HTTP and runtime boundaries from worker.js
 
 - Priority: High

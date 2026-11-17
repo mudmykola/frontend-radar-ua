@@ -8,6 +8,10 @@ import { createTelegramClient } from "../src/telegram/client.js";
 import { createScheduledHandler } from "../src/runtime/scheduled.js";
 import { createFetchRouter } from "../src/runtime/fetch-router.js";
 import { HTTP_ROUTES, createHttpRouteTable } from "../src/http/routes.js";
+import { createSubscriberRepository } from "../src/storage/subscriber-repository.js";
+import { createTelegramDelivery } from "../src/telegram/delivery.js";
+import { createTelegramWebhookProcessor } from "../src/telegram/webhook.js";
+import { createTelegramUpdateHandler } from "../src/telegram/update-handler.js";
 
 class MemoryKv {
   constructor(entries = {}) {
@@ -343,4 +347,124 @@ test("HTTP router dispatches by path and method and rejects unsupported methods"
   assert.equal(missing.status, 404);
   assert.deepEqual(calls, ["/health"]);
   assert.equal(HTTP_ROUTES.length, 13);
+});
+
+test("subscriber repository preserves preferences and tombstones inactive subscribers", async () => {
+  const kv = new MemoryKv({
+    "telegram:subscribers": JSON.stringify([{ chatId: "legacy", active: true }]),
+    "telegram:subscriber:legacy": JSON.stringify({ chatId: "legacy", active: false }),
+  });
+  const repository = createSubscriberRepository({ SHOPIFY_RADAR_KV: kv }, {
+    subscriberPrefix: "telegram:subscriber:", subscribersKey: "telegram:subscribers", feedbackPrefix: "feedback:",
+    subscribersLimit: 50, feedbackTtlSeconds: 3600,
+    readJsonObjectsByPrefix: async (env, prefix) => {
+      const page = await env.SHOPIFY_RADAR_KV.list({ prefix });
+      return Promise.all(page.keys.map(async ({ name }) => JSON.parse(await env.SHOPIFY_RADAR_KV.get(name))));
+    },
+    readJsonArray: async (env, key) => JSON.parse((await env.SHOPIFY_RADAR_KV.get(key)) || "[]"),
+    normalizePreferences: (value = {}) => ({ minPriority: ["P0", "P1", "P2"].includes(value.minPriority) ? value.minPriority : "P1", topics: value.topics || [], digestOnly: Boolean(value.digestOnly) }),
+    normalizeTags: (tags) => [...new Set(tags.flatMap((tag) => String(tag || "").split(/[,\s]+/).filter(Boolean)))],
+    normalizeStoredStructuredItem: (item) => item,
+    normalizeScore: (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback,
+    createItemId: async (item) => item.itemId || "generated",
+  });
+
+  assert.deepEqual(await repository.getSubscribers(), []);
+  const saved = await repository.saveSubscriber("7", { chat: { type: "private" }, from: { username: "reader" } });
+  assert.equal(saved.chatId, "7");
+  assert.equal((await repository.getSubscribers())[0].username, "reader");
+  await repository.removeSubscriber("7");
+  assert.deepEqual(await repository.getSubscribers(), []);
+});
+
+test("subscriber repository records feedback and applies preference weights", async () => {
+  const kv = new MemoryKv();
+  const repository = createSubscriberRepository({ SHOPIFY_RADAR_KV: kv }, {
+    subscriberPrefix: "telegram:subscriber:", subscribersKey: "telegram:subscribers", feedbackPrefix: "feedback:",
+    subscribersLimit: 50, feedbackTtlSeconds: 3600,
+    readJsonObjectsByPrefix: async (env, prefix) => {
+      const page = await env.SHOPIFY_RADAR_KV.list({ prefix });
+      return Promise.all(page.keys.map(async ({ name }) => JSON.parse(await env.SHOPIFY_RADAR_KV.get(name))));
+    },
+    readJsonArray: async () => [],
+    normalizePreferences: (value = {}) => ({ minPriority: value.minPriority || "P1", topics: value.topics || [], digestOnly: Boolean(value.digestOnly) }),
+    normalizeTags: (tags) => [...new Set(tags.flatMap((tag) => String(tag || "").split(/[,\s]+/).filter(Boolean)))],
+    normalizeStoredStructuredItem: (item) => item,
+    normalizeScore: (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback,
+    createItemId: async (item) => item.itemId || "generated",
+  });
+
+  const item = { itemId: "a", area: "Nuxt", devTags: ["nuxt"], impactTags: [], relevance: 8, benefit: 8, risk: 4 };
+  await repository.saveContentFeedback("7", item, "interesting");
+  const ranked = await repository.personalizeItems("7", [item, { ...item, itemId: "b", area: "Shopify", devTags: ["shopify"] }]);
+  assert.equal(ranked[0].itemId, "a");
+  assert.equal((await kv.get("feedback:7:a")) !== null, true);
+});
+
+test("Telegram delivery isolates subscriber failures and reports skipped recipients", async () => {
+  const sent = [];
+  const delivery = createTelegramDelivery({
+    getSubscribers: async () => [{ chatId: "ok" }, { chatId: "skip" }, { chatId: "fail" }],
+    shouldDeliverToSubscriber: (_item, subscriber) => subscriber.chatId !== "skip",
+    sendRaw: async (chatId) => {
+      if (chatId === "fail") throw new Error("network down");
+      sent.push(chatId);
+    },
+    delay: async () => {},
+    concurrency: 2,
+    batchDelayMs: 0,
+    safeErrorMessage: (error) => String(error.message),
+  });
+
+  const result = await delivery.sendMessage("news", {}, { item: { title: "change" } });
+  assert.deepEqual(sent, ["ok"]);
+  assert.equal(result.subscribers, 3);
+  assert.equal(result.deliveredSubscribers, 1);
+  assert.equal(result.skippedSubscribers, 1);
+  assert.deepEqual(result.failed, [{ chatId: "fail", error: "network down" }]);
+});
+
+test("Telegram delivery uses configured fallback chat when there are no subscribers", async () => {
+  const sent = [];
+  const delivery = createTelegramDelivery({
+    getSubscribers: async () => [],
+    shouldDeliverToSubscriber: () => true,
+    sendRaw: async (chatId) => sent.push(chatId),
+    delay: async () => {},
+    safeErrorMessage: String,
+  });
+  const result = await delivery.sendMessage("news", { TELEGRAM_CHAT_ID: "admin" });
+  assert.equal(result.fallback, true);
+  assert.deepEqual(sent, ["admin"]);
+});
+
+test("Telegram webhook processor deduplicates updates and marks only successful work", async () => {
+  const kv = new MemoryKv();
+  const processed = [];
+  const processor = createTelegramWebhookProcessor({ SHOPIFY_RADAR_KV: kv }, {
+    keyPrefix: "telegram:update:",
+    ttlSeconds: 60,
+    handleUpdate: async (update) => {
+      processed.push(update.update_id);
+      if (update.update_id === 2) throw new Error("failed");
+    },
+  });
+
+  await processor.process({ update_id: 1 });
+  await processor.process({ update_id: 1 });
+  await assert.rejects(processor.process({ update_id: 2 }), /failed/);
+  assert.deepEqual(processed, [1, 2]);
+  assert.equal(await kv.get("telegram:update:1"), "1");
+  assert.equal(await kv.get("telegram:update:2"), null);
+});
+
+test("Telegram update handler routes callback queries and messages to separate boundaries", async () => {
+  const calls = [];
+  const handle = createTelegramUpdateHandler({
+    handleCallback: async (value) => calls.push(["callback", value]),
+    handleMessage: async (value) => calls.push(["message", value]),
+  });
+  await handle({ callback_query: { id: "cb" } }, {});
+  await handle({ message: { text: "/latest" } }, {});
+  assert.deepEqual(calls, [["callback", { id: "cb" }], ["message", { message: { text: "/latest" } }]]);
 });

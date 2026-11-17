@@ -18,6 +18,7 @@ import {
 } from "./src/ingest/feed-utils.js";
 import { buildTelegramCommandMenu } from "./src/telegram/commands.js";
 import { createNewsRepository } from "./src/storage/news-repository.js";
+import { createSubscriberRepository } from "./src/storage/subscriber-repository.js";
 import { createAiClient } from "./src/enrichment/ai-client.js";
 import {
   TOPIC_MENU,
@@ -32,6 +33,9 @@ import {
   buildTopicsInlineKeyboard,
 } from "./src/telegram/keyboards.js";
 import { createTelegramClient } from "./src/telegram/client.js";
+import { createTelegramDelivery } from "./src/telegram/delivery.js";
+import { createTelegramWebhookProcessor } from "./src/telegram/webhook.js";
+import { createTelegramUpdateHandler } from "./src/telegram/update-handler.js";
 import { createScheduledHandler } from "./src/runtime/scheduled.js";
 import { createFetchRouter } from "./src/runtime/fetch-router.js";
 import { HTTP_ROUTES, createHttpRouteTable } from "./src/http/routes.js";
@@ -564,44 +568,26 @@ function validateEnv(env) {
 }
 
 async function handleTelegramWebhookOnce(update, env) {
-  const updateId = update?.update_id;
-  const updateKey =
-    updateId !== undefined && updateId !== null
-      ? `${TELEGRAM_UPDATE_KEY_PREFIX}${updateId}`
-      : "";
-
-  if (updateKey) {
-    const alreadyProcessed = await env.SHOPIFY_RADAR_KV.get(updateKey);
-
-    if (alreadyProcessed) {
-      return;
-    }
-
-    if (inFlightTelegramUpdates.has(updateKey)) {
-      return inFlightTelegramUpdates.get(updateKey);
-    }
-  }
-
-  const processing = (async () => {
-    await handleTelegramWebhook(update, env);
-
-    if (updateKey) {
-      await env.SHOPIFY_RADAR_KV.put(updateKey, "1", {
-        expirationTtl: TELEGRAM_UPDATE_TTL_SECONDS,
-      });
-    }
-  })();
-
-  if (updateKey) inFlightTelegramUpdates.set(updateKey, processing);
-
-  try {
-    await processing;
-  } finally {
-    if (updateKey) inFlightTelegramUpdates.delete(updateKey);
-  }
+  return createTelegramWebhookProcessor(env, {
+    keyPrefix: TELEGRAM_UPDATE_KEY_PREFIX,
+    ttlSeconds: TELEGRAM_UPDATE_TTL_SECONDS,
+    inFlight: inFlightTelegramUpdates,
+    handleUpdate: handleTelegramWebhook,
+  }).process(update);
 }
 
+
+
+const handleTelegramUpdate = createTelegramUpdateHandler({
+  handleCallback: handleTelegramCallback,
+  handleMessage: handleTelegramMessage,
+});
+
 async function handleTelegramWebhook(update, env) {
+  return handleTelegramUpdate(update, env);
+}
+
+async function handleTelegramMessage(update, env) {
   if (update?.callback_query) {
     await handleTelegramCallback(update.callback_query, env);
     return;
@@ -1090,143 +1076,27 @@ function hasCyrillic(text) {
 }
 
 async function saveSubscriber(chatId, message, env) {
-  const subscribers = await getSubscribers(env);
-  const id = String(chatId);
-
-  const user = message?.from || {};
-  const chat = message?.chat || {};
-
-  const existing = subscribers.find((item) => String(item.chatId) === id);
-
-  const subscriber = {
-    chatId: id,
-    type: chat.type || existing?.type || "private",
-    username: user.username || chat.username || existing?.username || null,
-    firstName: user.first_name || chat.first_name || existing?.firstName || null,
-    lastName: user.last_name || chat.last_name || existing?.lastName || null,
-    joinedAt: existing?.joinedAt || new Date().toISOString(),
-    lastSeenAt: new Date().toISOString(),
-    active: true,
-    preferences: normalizePreferences(existing?.preferences),
-  };
-
-  await env.SHOPIFY_RADAR_KV.put(
-    `${SUBSCRIBER_KEY_PREFIX}${encodeURIComponent(id)}`,
-    JSON.stringify(subscriber)
-  );
-
-  return subscriber;
+  return getSubscriberRepository(env).saveSubscriber(chatId, message);
 }
 
 async function removeSubscriber(chatId, env) {
-  const id = String(chatId);
-  await env.SHOPIFY_RADAR_KV.put(
-    `${SUBSCRIBER_KEY_PREFIX}${encodeURIComponent(id)}`,
-    JSON.stringify({ chatId: id, active: false, lastSeenAt: new Date().toISOString() })
-  );
-  return getSubscribers(env);
+  return getSubscriberRepository(env).removeSubscriber(chatId);
 }
 
 async function getSubscribers(env) {
-  const [individualSubscribers, legacySubscribers] = await Promise.all([
-    readJsonObjectsByPrefix(env, SUBSCRIBER_KEY_PREFIX, SUBSCRIBERS_LIMIT),
-    readJsonArray(env, SUBSCRIBERS_KEY),
-  ]);
-  const subscribersById = new Map();
-
-  for (const subscriber of [...legacySubscribers, ...individualSubscribers]) {
-    if (subscriber?.chatId) subscribersById.set(String(subscriber.chatId), subscriber);
-  }
-
-  return [...subscribersById.values()]
-    .filter((item) => item?.chatId && item.active !== false)
-    .map((subscriber) => ({
-      ...subscriber,
-      preferences: normalizePreferences(subscriber.preferences),
-    }))
-    .sort((a, b) => String(b.lastSeenAt || "").localeCompare(String(a.lastSeenAt || "")))
-    .slice(0, SUBSCRIBERS_LIMIT);
+  return getSubscriberRepository(env).getSubscribers();
 }
 
 async function updateSubscriber(chatId, updater, env) {
-  const subscribers = await getSubscribers(env);
-  const id = String(chatId);
-  const existing = subscribers.find((subscriber) => String(subscriber.chatId) === id) || {
-    chatId: id,
-    type: "private",
-    joinedAt: new Date().toISOString(),
-    active: true,
-    preferences: normalizePreferences(),
-  };
-
-  const updatedSubscriber = updater({
-    ...existing,
-    preferences: normalizePreferences(existing.preferences),
-    lastSeenAt: new Date().toISOString(),
-  });
-
-  await env.SHOPIFY_RADAR_KV.put(
-    `${SUBSCRIBER_KEY_PREFIX}${encodeURIComponent(id)}`,
-    JSON.stringify(updatedSubscriber)
-  );
-
-  return updatedSubscriber;
+  return getSubscriberRepository(env).updateSubscriber(chatId, updater);
 }
 
 async function saveContentFeedback(chatId, item, reaction, env) {
-  const itemId = String(item.itemId || (await createItemId(item)));
-  const record = {
-    itemId,
-    reaction,
-    area: item.area || "Shopify Dev",
-    tags: normalizeTags([...(item.devTags || []), ...(item.impactTags || [])]).slice(0, 12),
-    createdAt: new Date().toISOString(),
-  };
-
-  await env.SHOPIFY_RADAR_KV.put(
-    `${FEEDBACK_KEY_PREFIX}${encodeURIComponent(String(chatId))}:${itemId}`,
-    JSON.stringify(record),
-    { expirationTtl: SEEN_TTL_SECONDS }
-  );
+  return getSubscriberRepository(env).saveContentFeedback(chatId, item, reaction);
 }
 
 async function personalizeItems(chatId, items, env) {
-  const feedback = await readJsonObjectsByPrefix(
-    env,
-    `${FEEDBACK_KEY_PREFIX}${encodeURIComponent(String(chatId))}:`,
-    200
-  );
-  const weights = new Map();
-
-  for (const record of feedback) {
-    const delta = record.reaction === "interesting"
-      ? 2
-      : record.reaction === "useful"
-        ? 1.5
-        : record.reaction === "not-understood"
-          ? 0.25
-          : -2.5;
-    const signals = normalizeTags([record.area || "", ...(record.tags || [])]);
-    for (const signal of signals) weights.set(signal, (weights.get(signal) || 0) + delta);
-  }
-
-  return [...items].sort((left, right) => {
-    const score = (item) => {
-      const normalized = normalizeStoredStructuredItem(item);
-      const signals = normalizeTags([normalized.area || "", ...(normalized.devTags || []), ...(normalized.impactTags || [])]);
-      const preferenceBoost = signals.reduce((sum, signal) => sum + (weights.get(signal) || 0), 0);
-      return (
-        Number(normalized.relevance || 0) * 1.5 +
-        normalizeScore(normalized.benefit, 5) +
-        normalizeScore(normalized.risk, 4) * 0.5 +
-        preferenceBoost
-      );
-    };
-
-    const scoreDifference = score(right) - score(left);
-    if (scoreDifference) return scoreDifference;
-    return new Date(right.publishedAt || 0).getTime() - new Date(left.publishedAt || 0).getTime();
-  });
+  return getSubscriberRepository(env).personalizeItems(chatId, items);
 }
 
 function normalizePreferences(preferences = {}) {
@@ -1240,6 +1110,8 @@ function normalizePreferences(preferences = {}) {
     digestOnly: Boolean(preferences?.digestOnly),
   };
 }
+
+
 
 async function updateSubscriberSettingsFromCallback(chatId, data, env) {
   return updateSubscriber(
@@ -3098,6 +2970,23 @@ function getNewsRepository(env) {
   });
 }
 
+function getSubscriberRepository(env) {
+  return createSubscriberRepository(env, {
+    subscriberPrefix: SUBSCRIBER_KEY_PREFIX,
+    subscribersKey: SUBSCRIBERS_KEY,
+    feedbackPrefix: FEEDBACK_KEY_PREFIX,
+    subscribersLimit: SUBSCRIBERS_LIMIT,
+    feedbackTtlSeconds: SEEN_TTL_SECONDS,
+    readJsonObjectsByPrefix,
+    readJsonArray,
+    normalizePreferences,
+    normalizeTags,
+    normalizeStoredStructuredItem,
+    normalizeScore,
+    createItemId,
+  });
+}
+
 async function saveLatestItem(item, env) {
   return getNewsRepository(env).saveLatestItem(item);
 }
@@ -3916,72 +3805,18 @@ function formatStatsMessage(stats) {
 }
 
 async function sendTelegramMessage(message, env, options = {}) {
-  const subscribers = await getSubscribers(env);
-
-  if (!subscribers.length && env.TELEGRAM_CHAT_ID) {
-    await sendTelegramRaw(env.TELEGRAM_CHAT_ID, message, env, {
-      replyMarkup: options.replyMarkup,
-    });
-
-    return {
-      subscribers: 1,
-      deliveredSubscribers: 1,
-      skippedSubscribers: 0,
-      failed: [],
-      fallback: true,
-    };
-  }
-
-  const failed = [];
-  let deliveredSubscribers = 0;
-  let skippedSubscribers = 0;
-
-  const deliverableSubscribers = subscribers.filter((subscriber) => {
-    const deliver = !options.item || shouldDeliverToSubscriber(options.item, subscriber, options);
-    if (!deliver) skippedSubscribers += 1;
-    return deliver;
-  });
-
-  for (let index = 0; index < deliverableSubscribers.length; index += TELEGRAM_DELIVERY_CONCURRENCY) {
-    const batch = deliverableSubscribers.slice(index, index + TELEGRAM_DELIVERY_CONCURRENCY);
-    const results = await Promise.allSettled(
-      batch.map((subscriber) =>
-        sendTelegramRaw(subscriber.chatId, message, env, {
-          replyMarkup: options.replyMarkup,
-        })
-      )
-    );
-
-    results.forEach((result, resultIndex) => {
-      const subscriber = batch[resultIndex];
-      if (result.status === "fulfilled") {
-        deliveredSubscribers += 1;
-        return;
-      }
-
-      failed.push({
-        chatId: subscriber.chatId,
-        error: safeErrorMessage(result.reason),
-      });
-      console.error("Failed to send Telegram message to subscriber:", {
-        chatId: subscriber.chatId,
-        error: safeErrorMessage(result.reason),
-      });
-    });
-
-    if (index + TELEGRAM_DELIVERY_CONCURRENCY < deliverableSubscribers.length) {
-      await delay(TELEGRAM_DELIVERY_BATCH_DELAY_MS);
-    }
-  }
-
-  return {
-    subscribers: subscribers.length,
-    deliveredSubscribers,
-    skippedSubscribers,
-    failed,
-    fallback: false,
-  };
+  return createTelegramDelivery({
+    getSubscribers,
+    shouldDeliverToSubscriber,
+    sendRaw: sendTelegramRaw,
+    delay,
+    concurrency: TELEGRAM_DELIVERY_CONCURRENCY,
+    batchDelayMs: TELEGRAM_DELIVERY_BATCH_DELAY_MS,
+    safeErrorMessage,
+  }).sendMessage(message, env, options);
 }
+
+
 
 async function sendTelegramRaw(chatId, text, env, options = {}) {
   return getTelegramClient(env).sendMessage(chatId, text, options);

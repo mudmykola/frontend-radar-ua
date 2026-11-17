@@ -140,6 +140,7 @@ pnpm run ship
 ```
 
 `ship` зупиняється на першій помилці й не виконує deploy, якщо syntax check, тести або Wrangler dry-run не пройшли.
+Після успішного deploy `ship` робить п'ять health-check спроб. Якщо локальний DNS або мережа тимчасово не бачить Worker, deploy не позначається як failed: команда показує попередження і URL для ручної перевірки. Для строгого health-gate використовуй `pnpm run verify:production`.
 
 Admin routes require `Authorization: Bearer <ADMIN_SECRET>`. The Telegram webhook requires the `X-Telegram-Bot-Api-Secret-Token` header matching `TELEGRAM_WEBHOOK_SECRET`.
 

@@ -1656,7 +1656,8 @@ async function sendLatest(chatId, env) {
 }
 
 async function sendFilteredLatest(chatId, env, options) {
-  const latest = await ensureInitialNews(env);
+  await ensureLatestFeedSync(env);
+  const latest = await ensureInitialNews(env, { windowHours: TELEGRAM_LATEST_WINDOW_HOURS });
   const filtered = latest.filter(options.predicate).slice(0, LATEST_DISPLAY_LIMIT);
 
   if (!filtered.length) {
@@ -1771,7 +1772,7 @@ async function sendSingleCard(chatId, env, index = 1) {
 }
 
 async function sendSingleCardByReference(chatId, env, itemReference, displayMeta = {}) {
-  const latest = await getLatestItems(env);
+  const latest = await getLatestItems(env, { windowHours: TELEGRAM_LATEST_WINDOW_HOURS });
   const reference = String(itemReference || "").trim();
   const item = latest.find((candidate) =>
     String(candidate.itemId || "").startsWith(reference)

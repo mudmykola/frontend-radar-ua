@@ -254,6 +254,7 @@ test("configure webhook route registers Telegram webhook and command profile", a
     assert.equal(response.status, 200);
     assert.equal(body.webhook.registered, true);
     assert.ok(calls.some((url) => url.endsWith("/setWebhook")));
+    assert.ok(calls.some((url) => url.endsWith("/deleteMyCommands")));
     assert.ok(calls.some((url) => url.endsWith("/setMyCommands")));
   } finally {
     globalThis.fetch = originalFetch;

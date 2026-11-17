@@ -13,9 +13,10 @@ export const TOPIC_MENU = [
 export function buildMainReplyKeyboard() {
   return {
     keyboard: [
-      [{ text: "🆕 Свіже" }, { text: "🎯 Для мене" }],
-      [{ text: "🧰 Практика" }, { text: "🗂 Теми" }],
-      [{ text: "⚙️ Налаштування" }, { text: "ℹ️ Допомога" }],
+      [{ text: "🆕 Свіже" }, { text: "🔥 Важливе" }],
+      [{ text: "✅ Дії сьогодні" }, { text: "🧠 Зведення" }],
+      [{ text: "🗂 Research теми" }, { text: "⚙️ Налаштування" }],
+      [{ text: "ℹ️ Допомога" }],
     ],
     resize_keyboard: true,
     one_time_keyboard: false,

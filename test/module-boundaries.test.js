@@ -275,8 +275,10 @@ test("Telegram formatter keeps compact cards actionable and escaped", () => {
   });
   const output = formatter.formatCompactItems([{ title: "<Feature>", area: "Nuxt", essence: "Зміна", todayAction: "Перевірити" }]);
   assert.match(output, /&lt;Feature&gt;/);
-  assert.match(output, /Факт: Зміна/);
-  assert.match(output, /👉 \/full 1/);
+  assert.match(output, /Що змінилося: Зміна/);
+  assert.match(output, /Що зробити: Перевірити/);
+  assert.match(output, /👉 Натисни «Розбір 1»/);
+  assert.doesNotMatch(output, /\/full 1/);
 });
 
 test("run pipeline exposes a stable result boundary", () => {
@@ -311,6 +313,9 @@ test("Telegram handlers keep update and callback boundaries isolated", async () 
 
 test("Telegram parsing normalizes buttons, bot suffixes and indexes", () => {
   assert.equal(normalizeTelegramCommand("🆕 останні"), "/latest");
+  assert.equal(normalizeTelegramCommand("🔥 Важливе"), "/important");
+  assert.equal(normalizeTelegramCommand("✅ Дії сьогодні"), "/practice");
+  assert.equal(normalizeTelegramCommand("🗂 Research теми"), "/topics");
   assert.equal(normalizeTelegramCommand("/latest@frontend_radar_bot"), "/latest");
   assert.deepEqual(parseCommandArgs("/full 3"), ["3"]);
   assert.equal(parseOptionalIndex("2.9"), 2);

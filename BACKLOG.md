@@ -16,7 +16,7 @@
   - add a practical-only feed shortcut;
   - keep legacy slash commands working for compatibility;
   - update README, tests and Dev Log.
-- Completion: Compact v15 keyboard, inline topic menu, `/practice`, concise help and welcome copy are implemented. `pnpm run check` and 35 tests pass. Production deployment is intentionally pending explicit user confirmation.
+- Completion: Compact v15 keyboard, inline topic menu, user-facing Telegram command menu, `/practice`, concise help and welcome copy are implemented. Legacy `/card`, `/p0`, `/audit` and admin commands remain compatible but are hidden from the menu. Full callbacks preserve the visible list position and total, while contextual keyboards no longer duplicate `Full`, `Latest` and `Audit`. `pnpm run check` and 38 tests pass. Production deployment is intentionally pending explicit user confirmation.
 
 ## Backlog
 

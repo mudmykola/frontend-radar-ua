@@ -494,20 +494,7 @@ async function configureTelegramWebhook(request, env) {
 }
 
 async function configureTelegramProfile(env) {
-  const commands = [
-    ["start", "Запустити Frontend Intelligence Radar"],
-    ["latest", "Найсвіжіші frontend-новини"],
-    ["full", "Повні технічні розбори"],
-    ["vue", "Vue і Pinia"],
-    ["nuxt", "Nuxt, SSR і Nitro"],
-    ["js", "JavaScript, TypeScript, Node і Vite"],
-    ["css", "CSS, SCSS, Tailwind, UI та a11y"],
-    ["shopify", "Shopify, Liquid, checkout та API"],
-    ["cloudflare", "Cloudflare Workers та edge"],
-    ["digest", "Персональне ранкове зведення"],
-    ["settings", "Налаштувати теми й пріоритет"],
-    ["help", "Усі команди"],
-  ].map(([command, description]) => ({ command, description }));
+  const commands = buildTelegramCommandMenu();
   const operations = [
     ["setMyName", { name: SERVICE_NAME }],
     [
@@ -552,6 +539,20 @@ async function configureTelegramProfile(env) {
       if (!response.ok || !result.ok) throw new Error(`Telegram setMyProfilePhoto failed with status ${response.status}`);
     }
   }
+}
+
+function buildTelegramCommandMenu() {
+  return [
+    ["start", "Запустити Radar"],
+    ["latest", "Свіжі перевірені новини"],
+    ["practice", "Новини з конкретною дією"],
+    ["topics", "Обрати frontend-екосистему"],
+    ["full", "Відкрити повний розбір"],
+    ["digest", "Коротке персональне зведення"],
+    ["settings", "Налаштувати теми й пріоритет"],
+    ["help", "Як користуватися Radar"],
+    ["stop", "Вимкнути автоматичні новини"],
+  ].map(([command, description]) => ({ command, description }));
 }
 
 async function getTelegramWebhookInfo(env) {
@@ -1070,9 +1071,12 @@ async function handleTelegramCallback(callbackQuery, env) {
 
   try {
     if (data.startsWith("article:")) {
-      const itemReference = data.slice("article:".length);
+      const [, itemReference, displayIndex, displayTotal] = data.split(":");
       await answerCallbackQuery(callbackQuery.id, env, "Відкриваю обрану статтю...");
-      await sendSingleCardByReference(chatId, env, itemReference);
+      await sendSingleCardByReference(chatId, env, itemReference, {
+        index: parseOptionalIndex(displayIndex),
+        total: parseOptionalIndex(displayTotal),
+      });
       return;
     }
 
@@ -1774,7 +1778,7 @@ async function sendSingleCard(chatId, env, index = 1) {
   });
 }
 
-async function sendSingleCardByReference(chatId, env, itemReference) {
+async function sendSingleCardByReference(chatId, env, itemReference, displayMeta = {}) {
   const latest = await getLatestItems(env);
   const reference = String(itemReference || "").trim();
   const item = latest.find((candidate) =>
@@ -1790,11 +1794,13 @@ async function sendSingleCardByReference(chatId, env, itemReference) {
 
   const ordered = sortItemsByDateDesc(latest);
   const index = ordered.findIndex((candidate) => candidate.itemId === item.itemId);
+  const metaIndex = displayMeta.index || index + 1;
+  const metaTotal = displayMeta.total || ordered.length;
   await sendTelegramRaw(
     chatId,
-    formatStoredFullItem(item, { index: index + 1, total: ordered.length }),
+    formatStoredFullItem(item, { index: metaIndex, total: metaTotal }),
     env,
-    { replyMarkup: buildItemInlineKeyboard(item, Math.max(0, index)) }
+    { replyMarkup: buildItemInlineKeyboard(item, Math.max(0, metaIndex - 1)) }
   );
 }
 
@@ -4545,7 +4551,9 @@ function buildListInlineKeyboard(items) {
     const itemReference = String(item.itemId || "").slice(0, 16);
     return [{
       text: `📖 Розбір ${index + 1}`,
-      callback_data: itemReference ? `article:${itemReference}` : `card:${index}`,
+      callback_data: itemReference
+        ? `article:${itemReference}:${index + 1}:${Math.min(items.length, LATEST_DISPLAY_LIMIT)}`
+        : `card:${index}`,
     }];
   });
 
@@ -4558,12 +4566,8 @@ function buildItemInlineKeyboard(item, index = 0) {
   const itemReference = String(item.itemId || "").slice(0, 16);
   const keyboard = [
     [
-      { text: "🔗 Source", url: item.url },
-      { text: "✅ Audit", callback_data: "audit" },
-    ],
-    [
-      { text: "🆕 Latest", callback_data: "latest" },
-      { text: "📖 Full", callback_data: "full" },
+      { text: "🔗 Джерело", url: item.url },
+      { text: "🆕 Свіже", callback_data: "latest" },
     ],
   ];
 
@@ -4584,13 +4588,6 @@ function buildItemInlineKeyboard(item, index = 0) {
     keyboard.unshift([{ text: "🤔 Не зрозумів", callback_data: `feedback:x:${itemReference}` }]);
   }
 
-  if (Number.isFinite(index)) {
-    keyboard.unshift([{
-      text: `📖 Поточний розбір ${index + 1}`,
-      callback_data: itemReference ? `article:${itemReference}` : `card:${index}`,
-    }]);
-  }
-
   return {
     inline_keyboard: keyboard,
   };
@@ -4599,8 +4596,7 @@ function buildItemInlineKeyboard(item, index = 0) {
 function buildDigestInlineKeyboard() {
   return {
     inline_keyboard: [
-      [{ text: "📖 Full", callback_data: "full" }, { text: "✅ Audit", callback_data: "audit" }],
-      [{ text: "🆕 Latest", callback_data: "latest" }],
+      [{ text: "🆕 Свіже", callback_data: "latest" }, { text: "🗂 Теми", callback_data: "topics" }],
     ],
   };
 }
@@ -4608,7 +4604,7 @@ function buildDigestInlineKeyboard() {
 function buildAuditInlineKeyboard() {
   return {
     inline_keyboard: [
-      [{ text: "🆕 Latest", callback_data: "latest" }, { text: "📖 Full", callback_data: "full" }],
+      [{ text: "🆕 Свіже", callback_data: "latest" }, { text: "🗂 Теми", callback_data: "topics" }],
     ],
   };
 }
@@ -4616,7 +4612,7 @@ function buildAuditInlineKeyboard() {
 function buildAdminInlineKeyboard() {
   return {
     inline_keyboard: [
-      [{ text: "🆕 Latest", callback_data: "latest" }, { text: "✅ Audit", callback_data: "audit" }],
+      [{ text: "🆕 Свіже", callback_data: "latest" }, { text: "🗂 Теми", callback_data: "topics" }],
     ],
   };
 }
@@ -4744,8 +4740,12 @@ export const __test = {
   inferPriority,
   isPublishableItem,
   buildMainReplyKeyboard,
+  buildTelegramCommandMenu,
   buildTopicsInlineKeyboard,
   buildListInlineKeyboard,
   buildItemInlineKeyboard,
+  buildDigestInlineKeyboard,
+  buildAuditInlineKeyboard,
+  buildAdminInlineKeyboard,
 };
 

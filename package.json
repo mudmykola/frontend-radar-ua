@@ -1,6 +1,6 @@
 {
   "name": "frontend-intelligence-radar-ua",
-  "version": "13.0.0",
+  "version": "14.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,6 +8,7 @@
     "test": "node --test",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "ship": "pnpm run check && pnpm test && pnpm exec wrangler deploy --dry-run && pnpm exec wrangler deploy && curl -sS https://shopify-radar-ua.tovarinfobud.workers.dev/health",
     "telegram:webhook": "node scripts/register-telegram-webhook.mjs"
   },
   "devDependencies": {

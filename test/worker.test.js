@@ -501,6 +501,35 @@ test("v13 ranks newer releases before older high-priority releases", () => {
   assert.equal(ranked[0].title, "v1.2.3 patch");
 });
 
+test("v14 balances indexed news across sources", () => {
+  const balanced = __test.balanceItemsBySource([
+    { sourceId: "cloudflare", title: "CF 1", publishedAt: "2026-11-17T10:00:00Z" },
+    { sourceId: "cloudflare", title: "CF 2", publishedAt: "2026-11-17T09:00:00Z" },
+    { sourceId: "cloudflare", title: "CF 3", publishedAt: "2026-11-17T08:00:00Z" },
+    { sourceId: "shopify", title: "Shopify 1", publishedAt: "2026-11-17T07:00:00Z" },
+    { sourceId: "vue-blog", title: "Vue 1", publishedAt: "2026-11-17T06:00:00Z" },
+  ], 2);
+
+  assert.deepEqual(balanced.map((item) => item.title), ["CF 1", "CF 2", "Shopify 1", "Vue 1"]);
+});
+
+test("v14 removes routine patch releases from release-only sources", () => {
+  assert.equal(__test.isHighSignalFeedItem({
+    sourceId: "node",
+    title: "2026-11-11, Version 26.13.1 (LTS)",
+    summary: "Bug fixes and dependency updates",
+    url: "https://github.com/nodejs/node/releases/tag/v26.13.1",
+    publishedAt: "2026-11-11T16:44:25Z",
+  }), false);
+  assert.equal(__test.isHighSignalFeedItem({
+    sourceId: "vue-blog",
+    title: "Vue 3.6: new compiler capabilities",
+    summary: "A new feature announcement",
+    url: "https://blog.vuejs.org/posts/example",
+    publishedAt: "2026-11-11T16:44:25Z",
+  }), true);
+});
+
 test("v13 removes cross-stack hallucinated tags", () => {
   const normalized = __test.normalizeStructuredSummary(
     {

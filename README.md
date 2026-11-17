@@ -2,9 +2,9 @@
 
 Cloudflare Worker і Telegram-бот, який стежить за офіційними змінами у frontend-екосистемі та пояснює їх українською мовою.
 
-Shopify — лише одне з джерел. Радар також охоплює Vue, Nuxt, Pinia, Vite, JavaScript, TypeScript, CSS, Sass, Tailwind, Node.js, MDN і Cloudflare Workers.
+Shopify — лише одне з джерел. Радар також охоплює Vue, Nuxt, Pinia, Vite, Vitest, Playwright, Nitro, Nuxt UI, JavaScript, TypeScript, CSS, Sass, Tailwind, Node.js, MDN, web.dev і Cloudflare Workers.
 
-## Поточна версія v13
+## Поточна версія v14
 
 - показує лише офіційні матеріали за останні сім днів;
 - сортує новини за реальною датою публікації;
@@ -13,6 +13,7 @@ Shopify — лише одне з джерел. Радар також охопл�
 - пояснює: що змінилося, кого стосується, де перевірити і що зробити;
 - відкриває один точний `/full`-розбір за стабільним ID статті;
 - обробляє до трьох нових матеріалів за cron-запуск;
+- балансує індексацію між екосистемами, щоб Cloudflare або Shopify не витісняли всі інші теми;
 - зберігає окремі записи в Cloudflare KV без legacy aggregate news arrays.
 
 ## Формат корисної новини
@@ -21,7 +22,7 @@ Shopify — лише одне з джерел. Радар також охопл�
 
 ## Джерела
 
-Shopify Developer Changelog, Vue, Nuxt, Pinia і Vite releases, Tailwind CSS, TypeScript і Sass releases, Node.js releases, MDN Blog та Cloudflare Developer Changelog.
+Shopify Developer Changelog, Vue і Nuxt official blogs, Vue/Nuxt/Pinia/Vite/Nitro/Nuxt UI/Vitest/Playwright releases, Vite Blog, Tailwind CSS Blog і releases, TypeScript і Sass releases, Node.js releases, MDN Blog, web.dev Blog, Cloudflare Developer Changelog і Cloudflare Blog.
 
 ## Telegram-команди
 
@@ -99,6 +100,14 @@ Production Worker історично має ім’я `shopify-radar-ua`. Це �
 3. Optionally set `ADMIN_TELEGRAM_CHAT_ID` and `TELEGRAM_CHAT_ID`.
 4. Run `pnpm dev`.
 
+Для повного циклу перевірки, deploy і production health-check використовуй одну команду:
+
+```sh
+pnpm run ship
+```
+
+`ship` зупиняється на першій помилці й не виконує deploy, якщо syntax check, тести або Wrangler dry-run не пройшли.
+
 Admin routes require `Authorization: Bearer <ADMIN_SECRET>`. The Telegram webhook requires the `X-Telegram-Bot-Api-Secret-Token` header matching `TELEGRAM_WEBHOOK_SECRET`.
 
 After setting the production `TELEGRAM_WEBHOOK_SECRET`, register it with Telegram:
@@ -127,6 +136,8 @@ Never place secrets in `wrangler.jsonc`, URLs, Git history, screenshots, or logs
 4. `test/` — regression coverage для нового або виправленого сценарію.
 
 Якщо змінюється команда, endpoint, environment variable, binding, джерело новин, формат Telegram або deployment flow — README оновлюється разом із кодом.
+
+Після завершення реалізації, успішних тестів і Wrangler dry-run production deploy виконується одразу після явного підтвердження користувача. Не залишати перевірену production-зміну в стані «готово, але не задеплоєно» без пояснення причини.
 
 ## Git commit rules
 

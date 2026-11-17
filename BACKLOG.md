@@ -19,6 +19,19 @@ No active tasks.
 
 ## Done
 
+### Content: Diversify official frontend sources v14
+
+- Priority: High
+- Labels: `core`, `backend`, `Content`, `Improvement`, `Deployment`
+- Assignee: tovarinfobud
+- Status: Done
+- Scope:
+  - add official Vue, Nuxt, Vite, Tailwind, Cloudflare, web.dev, Nitro, Nuxt UI, Vitest and Playwright sources;
+  - balance indexed items by ecosystem;
+  - suppress routine patch releases and prerelease noise;
+  - update README, tests and Dev Log.
+- Completion: 34/34 tests pass, Wrangler dry-run passes, and production v14.0 is deployed as version `2f3b343d-b0cd-4e8c-9329-79388da2c50e`. Health confirms `Frontend Intelligence Radar UA v14.0`.
+
 ### Telegram: Open the exact article selected from any feed
 
 - Priority: High

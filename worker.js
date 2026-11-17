@@ -5,48 +5,32 @@ import {
   safeErrorMessage,
 } from "./src/http-security.js";
 
-const CONTENT_SOURCES = [
-  { id: "shopify", name: "Shopify Developer Changelog", feedUrl: "https://shopify.dev/changelog/feed.xml", format: "rss", tags: ["shopify"] },
-  { id: "vue-blog", name: "Vue Official Blog", feedUrl: "https://blog.vuejs.org/feed.rss", format: "rss", tags: ["vue", "javascript", "ui"] },
-  { id: "vue", name: "Vue Releases", feedUrl: "https://github.com/vuejs/core/releases.atom", format: "atom", tags: ["vue", "javascript", "ui"] },
-  { id: "nuxt-blog", name: "Nuxt Official Blog", feedUrl: "https://nuxt.com/blog/rss.xml", format: "rss", tags: ["nuxt", "vue", "ssr"] },
-  { id: "nuxt", name: "Nuxt Releases", feedUrl: "https://github.com/nuxt/nuxt/releases.atom", format: "atom", tags: ["nuxt", "vue", "ssr"] },
-  { id: "nuxt-ui", name: "Nuxt UI Releases", feedUrl: "https://github.com/nuxt/ui/releases.atom", format: "atom", tags: ["nuxt", "vue", "ui", "tailwind"] },
-  { id: "nitro", name: "Nitro Releases", feedUrl: "https://github.com/nitrojs/nitro/releases.atom", format: "atom", tags: ["nuxt", "nitro", "ssr", "javascript"] },
-  { id: "pinia", name: "Pinia Releases", feedUrl: "https://github.com/vuejs/pinia/releases.atom", format: "atom", tags: ["pinia", "vue", "state-management"] },
-  { id: "vite", name: "Vite Releases", feedUrl: "https://github.com/vitejs/vite/releases.atom", format: "atom", tags: ["vite", "javascript", "build-tools"] },
-  { id: "vite-blog", name: "Vite Official Blog", feedUrl: "https://vite.dev/blog.rss", format: "rss", tags: ["vite", "javascript", "build-tools"] },
-  { id: "vitest", name: "Vitest Releases", feedUrl: "https://github.com/vitest-dev/vitest/releases.atom", format: "atom", tags: ["vitest", "vite", "javascript", "testing"] },
-  { id: "playwright", name: "Playwright Releases", feedUrl: "https://github.com/microsoft/playwright/releases.atom", format: "atom", tags: ["playwright", "javascript", "testing", "browser"] },
-  { id: "tailwind", name: "Tailwind CSS Releases", feedUrl: "https://github.com/tailwindlabs/tailwindcss/releases.atom", format: "atom", tags: ["tailwind", "css", "ui"] },
-  { id: "tailwind-blog", name: "Tailwind CSS Blog", feedUrl: "https://tailwindcss.com/feeds/feed.xml", format: "rss", tags: ["tailwind", "css", "ui"] },
-  { id: "typescript", name: "TypeScript Releases", feedUrl: "https://github.com/microsoft/TypeScript/releases.atom", format: "atom", tags: ["typescript", "javascript"] },
-  { id: "sass", name: "Sass Releases", feedUrl: "https://github.com/sass/dart-sass/releases.atom", format: "atom", tags: ["sass", "scss", "css"] },
-  { id: "node", name: "Node.js Releases", feedUrl: "https://github.com/nodejs/node/releases.atom", format: "atom", tags: ["node", "javascript", "runtime"] },
-  { id: "mdn", name: "MDN Blog", feedUrl: "https://developer.mozilla.org/en-US/blog/rss.xml", format: "rss", tags: ["javascript", "css", "web-platform", "a11y"] },
-  { id: "webdev", name: "web.dev Blog", feedUrl: "https://web.dev/static/blog/feed.xml", format: "rss", tags: ["javascript", "css", "web-platform", "performance", "a11y"] },
-  { id: "cloudflare", name: "Cloudflare Developer Changelog", feedUrl: "https://developers.cloudflare.com/changelog/rss/index.xml", format: "rss", tags: ["cloudflare", "workers", "edge"] },
-  { id: "cloudflare-blog", name: "Cloudflare Blog", feedUrl: "https://blog.cloudflare.com/rss/", format: "rss", tags: ["cloudflare", "workers", "edge", "security", "web-platform"] },
-];
-const APPROVED_ARTICLE_HOSTS = new Set([
-  "shopify.dev",
-  "github.com",
-  "nuxt.com",
-  "vuejs.org",
-  "blog.vuejs.org",
-  "pinia.vuejs.org",
-  "vite.dev",
-  "tailwindcss.com",
-  "typescriptlang.org",
-  "devblogs.microsoft.com",
-  "sass-lang.com",
-  "nodejs.org",
-  "developer.mozilla.org",
-  "developers.cloudflare.com",
-  "blog.cloudflare.com",
-  "web.dev",
-  "vitest.dev",
-]);
+import { APPROVED_ARTICLE_HOSTS, CONTENT_SOURCES } from "./src/config/sources.js";
+import {
+  balanceItemsBySource,
+  filterFreshFeedItems,
+  filterItemsByLookback,
+  filterItemsWithinHours,
+  isHighSignalFeedItem,
+  rankFeedItems,
+  sortByPublishedDesc,
+  sortItemsByDateDesc,
+} from "./src/ingest/feed-utils.js";
+import { buildTelegramCommandMenu } from "./src/telegram/commands.js";
+import { createNewsRepository } from "./src/storage/news-repository.js";
+import { createAiClient } from "./src/enrichment/ai-client.js";
+import {
+  TOPIC_MENU,
+  buildAdminInlineKeyboard,
+  buildAuditInlineKeyboard,
+  buildDigestInlineKeyboard,
+  buildItemInlineKeyboard,
+  buildListInlineKeyboard,
+  buildMainReplyKeyboard,
+  buildRemoveKeyboard,
+  buildSettingsInlineKeyboard,
+  buildTopicsInlineKeyboard,
+} from "./src/telegram/keyboards.js";
 
 const SERVICE_NAME = "Frontend Intelligence Radar UA";
 const SERVICE_VERSION = "v15.0";
@@ -544,19 +528,6 @@ async function configureTelegramProfile(env) {
   }
 }
 
-function buildTelegramCommandMenu() {
-  return [
-    ["start", "Запустити Radar"],
-    ["latest", "Свіжі перевірені новини"],
-    ["practice", "Новини з конкретною дією"],
-    ["topics", "Обрати frontend-екосистему"],
-    ["full", "Відкрити повний розбір"],
-    ["digest", "Коротке персональне зведення"],
-    ["settings", "Налаштувати теми й пріоритет"],
-    ["help", "Як користуватися Radar"],
-    ["stop", "Вимкнути автоматичні новини"],
-  ].map(([command, description]) => ({ command, description }));
-}
 
 async function getTelegramWebhookInfo(env) {
   if (!env.TELEGRAM_BOT_TOKEN) throw new Error("Telegram bot token is missing");
@@ -798,16 +769,6 @@ async function indexContentSources(env) {
   };
 }
 
-function balanceItemsBySource(items, perSourceLimit = MAX_INDEXED_ITEMS_PER_SOURCE) {
-  const buckets = new Map();
-  for (const item of items || []) {
-    const sourceId = item.sourceId || item.source || "unknown";
-    const bucket = buckets.get(sourceId) || [];
-    if (bucket.length < perSourceLimit) bucket.push(item);
-    buckets.set(sourceId, bucket);
-  }
-  return rankFeedItems([...buckets.values()].flat());
-}
 
 function buildRunResultItem(item, meta = {}) {
   const result = {
@@ -2520,42 +2481,8 @@ function normalizeReleaseIdentity(item) {
     .slice(0, 240);
 }
 
-function isHighSignalFeedItem(item) {
-  const text = buildSearchText(item);
-  const important = /security advisory|security release|vulnerab|\bcve-?\d*|breaking change|deprecat|migration required|critical/i.test(text);
-  const prerelease = /\b(alpha|beta|rc|nightly|canary|snapshot|next)\b/i.test(item.title || "");
-  const routineNodePatch = item.sourceId === "node" && /(?:node\.js\s+)?v?\d+\.\d+\.\d+\b/i.test(item.title || "") && !/major|minor|security|vulnerab|breaking|deprecat/i.test(text);
-  const routineToolPatch = ["vite", "sass", "playwright", "nitro", "nuxt-ui", "vitest"].includes(item.sourceId) && /^v?\d+\.\d+\.\d+\b/i.test(item.title || "") && !/security|vulnerab|breaking|deprecat|migration/i.test(text);
-  const irrelevantCloudflare = item.sourceId === "cloudflare" && /cloudflare one client|\bcasb\b|zero trust|saved login profiles|warp client/i.test(text);
-  const genericReleaseStub = /^(?:v|dart sass |sass-api-)?\d+\.\d+\.\d+(?:[-+].*)?$/i.test(item.title || "") &&
-    /refer to .*changelog|committer metadata|creating a tag/i.test(cleanHtml(item.summary || ""));
 
-  if (prerelease && !important) return false;
-  if (routineNodePatch && !important) return false;
-  if (routineToolPatch && !important) return false;
-  if (irrelevantCloudflare && !important) return false;
-  if (genericReleaseStub && !important) return false;
-  return Boolean(item.title && item.url && item.publishedAt);
-}
 
-function rankFeedItems(items) {
-  return [...items].sort((left, right) => {
-    const priority = (item) => {
-      const text = buildSearchText(item);
-      if (/security|vulnerab|cve|breaking|deprecat|migration required|critical/i.test(text)) return 3;
-      if (/major|release|stable|typescript|vue|nuxt|shopify|tailwind|vite/i.test(text)) return 2;
-      if (/patch|chore|dependencies/i.test(text)) return 0;
-      return 1;
-    };
-    const dateDifference = sortByPublishedDesc(left, right);
-    if (dateDifference) return dateDifference;
-    return priority(right) - priority(left);
-  });
-}
-
-function sortByPublishedDesc(left, right) {
-  return new Date(right?.publishedAt || 0).getTime() - new Date(left?.publishedAt || 0).getTime();
-}
 
 async function readResponseTextLimited(response, maxBytes) {
   if (!response.body?.getReader) return (await response.text()).slice(0, maxBytes);
@@ -2656,44 +2583,8 @@ function extractReadableArticleText(html) {
   );
 }
 
-function filterItemsByLookback(items, lookbackDays) {
-  const minTime = Date.now() - lookbackDays * 24 * 60 * 60 * 1000;
 
-  return items.filter((item) => {
-    if (!item.publishedAt) return true;
 
-    const publishedTime = new Date(item.publishedAt).getTime();
-
-    if (Number.isNaN(publishedTime)) return true;
-
-    return publishedTime >= minTime;
-  });
-}
-
-function filterFreshFeedItems(items, now = Date.now()) {
-  const sorted = sortItemsByDateDesc(items || []);
-  const datedItems = sorted.filter((item) => {
-    const timestamp = new Date(item?.publishedAt || "").getTime();
-    return Number.isFinite(timestamp);
-  });
-
-  if (!datedItems.length) return [];
-
-  const cutoff = now - FRESH_NEWS_WINDOW_DAYS * 24 * 60 * 60 * 1000;
-  return datedItems.filter((item) => {
-    const timestamp = new Date(item.publishedAt).getTime();
-    return timestamp >= cutoff && timestamp <= now + 5 * 60 * 1000;
-  });
-}
-
-function filterItemsWithinHours(items, hours, now = Date.now()) {
-  const cutoff = now - Number(hours) * 60 * 60 * 1000;
-
-  return sortItemsByDateDesc(items).filter((item) => {
-    const timestamp = new Date(item?.publishedAt || "").getTime();
-    return Number.isFinite(timestamp) && timestamp >= cutoff && timestamp <= now + 5 * 60 * 1000;
-  });
-}
 
 function shouldReenrichItem(item, now = Date.now()) {
   if (!item) return false;
@@ -2888,96 +2779,8 @@ ${item.articleContext || "Full article unavailable. Do not invent missing detail
   });
 }
 
-async function callAiText(env, options) {
-  const baseUrl = normalizeBaseUrl(env.AI_BASE_URL);
-  const model = String(env.AI_MODEL || "").trim();
 
-  if (!baseUrl) throw new Error("Missing AI_BASE_URL");
-  if (!model) throw new Error("Missing AI_MODEL");
-  if (!env.AI_API_KEY) throw new Error("Missing AI_API_KEY");
 
-  return requestAiCompletionWithFallback(env, { ...options, model });
-}
-
-async function requestAiCompletionWithFallback(env, options, dependencies = {}) {
-  const models = normalizeList([
-    options.model || env.AI_MODEL,
-    ...String(env.AI_FALLBACK_MODELS || "").split(","),
-  ]).filter(Boolean);
-  let lastError;
-
-  for (const model of models) {
-    try {
-      return await requestAiCompletion(env, { ...options, model }, {
-        ...dependencies,
-        maxRetries: dependencies.maxRetries ?? 1,
-      });
-    } catch (error) {
-      lastError = error;
-      if (!/status (404|429|500|502|503|504)|тимчасово недоступний/i.test(String(error?.message || error))) throw error;
-      console.warn("AI model fallback:", { model, error: safeErrorMessage(error) });
-    }
-  }
-
-  throw lastError || new Error("No AI model is available");
-}
-
-async function requestAiCompletion(env, options, dependencies = {}) {
-  const baseUrl = normalizeBaseUrl(env.AI_BASE_URL);
-  const fetchImpl = dependencies.fetchImpl || fetch;
-  const sleepImpl = dependencies.sleepImpl || delay;
-  const model = String(options.model || env.AI_MODEL || "").trim();
-  const maxRetries = clampNumber(dependencies.maxRetries ?? AI_MAX_RETRIES, 0, 5);
-
-  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-    const response = await fetchImpl(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.AI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        temperature: options.temperature ?? 0.1,
-        max_tokens: options.maxTokens ?? 900,
-        messages: [
-          { role: "system", content: options.system },
-          { role: "user", content: options.prompt },
-        ],
-      }),
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      const content =
-        data?.choices?.[0]?.message?.content ||
-        data?.choices?.[0]?.text ||
-        data?.output_text ||
-        data?.response ||
-        "";
-
-      if (!String(content).trim()) throw new Error("AI returned empty response");
-      return String(content).trim();
-    }
-
-    const retryable = AI_RETRYABLE_STATUSES.has(response.status);
-    const retryAfterSeconds = Number(response.headers.get("retry-after") || 0);
-    await response.body?.cancel();
-
-    if (!retryable || attempt === maxRetries) {
-      if (retryable) {
-        throw new Error(`Gemini тимчасово недоступний після ${attempt + 1} спроб (status ${response.status})`);
-      }
-      throw new Error(`AI request failed with status ${response.status}`);
-    }
-
-    const exponentialDelay = AI_RETRY_BASE_DELAY_MS * 2 ** attempt;
-    const retryAfterDelay = Number.isFinite(retryAfterSeconds) ? retryAfterSeconds * 1000 : 0;
-    await sleepImpl(Math.min(Math.max(exponentialDelay, retryAfterDelay), 10000));
-  }
-
-  throw new Error("Gemini тимчасово недоступний");
-}
 
 function parseAiStructured(text, item) {
   const raw = String(text || "").trim();
@@ -3549,13 +3352,24 @@ function shouldDeliverToSubscriber(item, subscriber, options = {}) {
   return preferences.topics.some((topic) => haystack.includes(topic.toLowerCase()));
 }
 
+function getNewsRepository(env) {
+  return createNewsRepository(env, {
+    latestPrefix: LATEST_ITEM_KEY_PREFIX,
+    digestPrefix: DIGEST_ITEM_KEY_PREFIX,
+    latestLimit: LATEST_ITEMS_LIMIT,
+    digestLimit: DIGEST_ITEMS_LIMIT,
+    ttlSeconds: SEEN_TTL_SECONDS,
+    createItemId,
+    serialize: serializeStoredItem,
+    filterFresh: filterFreshFeedItems,
+    filterWithinHours: filterItemsWithinHours,
+    isPublishable: isPublishableItem,
+    sortByDate: sortItemsByDateDesc,
+  });
+}
+
 async function saveLatestItem(item, env) {
-  const id = await createItemId(item);
-  await env.SHOPIFY_RADAR_KV.put(
-    `${LATEST_ITEM_KEY_PREFIX}${id}`,
-    JSON.stringify(serializeStoredItem(item)),
-    { expirationTtl: SEEN_TTL_SECONDS }
-  );
+  return getNewsRepository(env).saveLatestItem(item);
 }
 
 async function indexFreshFeedItems(items, env) {
@@ -3584,28 +3398,15 @@ async function indexFreshFeedItems(items, env) {
 }
 
 async function saveDigestItem(item, env) {
-  const id = await createItemId(item);
-  await env.SHOPIFY_RADAR_KV.put(
-    `${DIGEST_ITEM_KEY_PREFIX}${id}`,
-    JSON.stringify(serializeStoredItem(item)),
-    { expirationTtl: SEEN_TTL_SECONDS }
-  );
+  return getNewsRepository(env).saveDigestItem(item);
 }
 
 async function getLatestItems(env, options = {}) {
-  const items = filterFreshFeedItems(
-    await readStoredItems(env, LATEST_ITEM_KEY_PREFIX, LATEST_ITEMS_KEY, LATEST_ITEMS_LIMIT)
-  ).filter(isPublishableItem);
-
-  return options.windowHours
-    ? filterItemsWithinHours(items, options.windowHours)
-    : items;
+  return getNewsRepository(env).getLatestItems(options.windowHours);
 }
 
 async function getDigestItems(env) {
-  return filterFreshFeedItems(
-    await readStoredItems(env, DIGEST_ITEM_KEY_PREFIX, DIGEST_ITEMS_KEY, DIGEST_ITEMS_LIMIT)
-  ).filter(isPublishableItem);
+  return getNewsRepository(env).getDigestItems();
 }
 
 function isPublishableItem(item) {
@@ -3620,15 +3421,15 @@ function isPublishableItem(item) {
   );
 }
 
-async function readStoredItems(env, prefix, _legacyKey, limit) {
-  const individualItems = await readJsonObjectsByPrefix(env, prefix, limit * 2);
-  const itemsByUrl = new Map();
+async function readJsonArray(env, key) {
+  try {
+    const raw = await env.SHOPIFY_RADAR_KV.get(key);
+    const parsed = raw ? JSON.parse(raw) : [];
 
-  for (const item of individualItems) {
-    if (item?.url) itemsByUrl.set(item.url, item);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
-
-  return sortItemsByDateDesc([...itemsByUrl.values()]).slice(0, limit);
 }
 
 async function readJsonObjectsByPrefix(env, prefix, limit) {
@@ -3653,17 +3454,6 @@ async function readJsonObjectsByPrefix(env, prefix, limit) {
   } while (cursor && items.length < limit);
 
   return items.slice(0, limit);
-}
-
-async function readJsonArray(env, key) {
-  try {
-    const raw = await env.SHOPIFY_RADAR_KV.get(key);
-    const parsed = raw ? JSON.parse(raw) : [];
-
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
 }
 
 function serializeStoredItem(item) {
@@ -4336,14 +4126,6 @@ function normalizeUkrainianText(text) {
     .trim();
 }
 
-function sortItemsByDateDesc(items) {
-  return [...(items || [])].sort((a, b) => {
-    const aTime = a?.publishedAt ? new Date(a.publishedAt).getTime() : 0;
-    const bTime = b?.publishedAt ? new Date(b.publishedAt).getTime() : 0;
-
-    return bTime - aTime;
-  });
-}
 
 function clampNumber(value, min, max) {
   const number = Number(value);
@@ -4544,26 +4326,7 @@ async function answerCallbackQuery(callbackQueryId, env, text = "OK") {
   });
 }
 
-function buildMainReplyKeyboard() {
-  return {
-    keyboard: [
-      [{ text: "🆕 Свіже" }, { text: "🎯 Для мене" }],
-      [{ text: "🧰 Практика" }, { text: "🗂 Теми" }],
-      [{ text: "⚙️ Налаштування" }, { text: "ℹ️ Допомога" }],
-    ],
-    resize_keyboard: true,
-    one_time_keyboard: false,
-  };
-}
 
-const TOPIC_MENU = [
-  { id: "vue", label: "Vue / Nuxt", title: "💚 VUE / NUXT", emptyTitle: "💚 Свіжих Vue/Nuxt новин немає", tags: ["vue", "nuxt", "pinia", "ssr", "nitro"] },
-  { id: "js", label: "JS / TS / Vite", title: "⚡ JS / TS / VITE", emptyTitle: "⚡ Свіжих JS/TS/Vite новин немає", tags: ["javascript", "typescript", "node", "vite", "vitest"] },
-  { id: "css", label: "CSS / Tailwind / UI", title: "🎨 CSS / TAILWIND / UI", emptyTitle: "🎨 Свіжих CSS/UI новин немає", tags: ["css", "scss", "sass", "tailwind", "ui", "a11y"] },
-  { id: "testing", label: "Testing / Browser", title: "🧪 TESTING / BROWSER", emptyTitle: "🧪 Свіжих Testing/Browser новин немає", tags: ["testing", "playwright", "vitest", "browser"] },
-  { id: "shopify", label: "Shopify", title: "🛍 SHOPIFY", emptyTitle: "🛍 Свіжих Shopify новин немає", tags: ["shopify", "liquid", "admin-api", "storefront-api", "checkout"] },
-  { id: "cloudflare", label: "Cloudflare / Edge", title: "☁️ CLOUDFLARE / EDGE", emptyTitle: "☁️ Свіжих Cloudflare новин немає", tags: ["cloudflare", "workers", "edge"] },
-];
 
 async function sendTopics(chatId, env) {
   await sendTelegramRaw(chatId, "🗂 <b>ОБЕРИ ТЕМУ</b>\n\nПокажу тільки свіжі перевірені новини з обраної екосистеми.", env, {
@@ -4571,122 +4334,13 @@ async function sendTopics(chatId, env) {
   });
 }
 
-function buildTopicsInlineKeyboard() {
-  return {
-    inline_keyboard: [
-      ...TOPIC_MENU.reduce((rows, topic, index) => {
-        if (index % 2 === 0) rows.push([]);
-        rows[rows.length - 1].push({ text: topic.label, callback_data: `topic:${topic.id}` });
-        return rows;
-      }, []),
-      [{ text: "🆕 Свіже", callback_data: "latest" }],
-    ],
-  };
-}
 
-function buildRemoveKeyboard() {
-  return {
-    remove_keyboard: true,
-  };
-}
 
-function buildListInlineKeyboard(items) {
-  const rows = items.slice(0, LATEST_DISPLAY_LIMIT).map((item, index) => {
-    const itemReference = String(item.itemId || "").slice(0, 16);
-    return [{
-      text: `📖 Розбір ${index + 1}`,
-      callback_data: itemReference
-        ? `article:${itemReference}:${index + 1}:${Math.min(items.length, LATEST_DISPLAY_LIMIT)}`
-        : `card:${index}`,
-    }];
-  });
 
-  return {
-    inline_keyboard: rows,
-  };
-}
 
-function buildItemInlineKeyboard(item, index = 0) {
-  const itemReference = String(item.itemId || "").slice(0, 16);
-  const keyboard = [
-    [
-      { text: "🔗 Джерело", url: item.url },
-      { text: "🆕 Свіже", callback_data: "latest" },
-    ],
-  ];
 
-  if (itemReference) {
-    keyboard.unshift([
-      { text: "🧠 Поясни простіше", callback_data: `mode:e:${itemReference}` },
-      { text: "💻 Приклад", callback_data: `mode:k:${itemReference}` },
-    ]);
-    keyboard.unshift([
-      { text: "🎯 Чи стосується мене?", callback_data: `mode:r:${itemReference}` },
-      { text: "✅ Чеклист", callback_data: `mode:c:${itemReference}` },
-    ]);
-    keyboard.unshift([
-      { text: "👍 Корисно", callback_data: `feedback:u:${itemReference}` },
-      { text: "🔥 Цікаво", callback_data: `feedback:i:${itemReference}` },
-      { text: "👎 Не моє", callback_data: `feedback:n:${itemReference}` },
-    ]);
-    keyboard.unshift([{ text: "🤔 Не зрозумів", callback_data: `feedback:x:${itemReference}` }]);
-  }
 
-  return {
-    inline_keyboard: keyboard,
-  };
-}
 
-function buildDigestInlineKeyboard() {
-  return {
-    inline_keyboard: [
-      [{ text: "🆕 Свіже", callback_data: "latest" }, { text: "🗂 Теми", callback_data: "topics" }],
-    ],
-  };
-}
-
-function buildAuditInlineKeyboard() {
-  return {
-    inline_keyboard: [
-      [{ text: "🆕 Свіже", callback_data: "latest" }, { text: "🗂 Теми", callback_data: "topics" }],
-    ],
-  };
-}
-
-function buildAdminInlineKeyboard() {
-  return {
-    inline_keyboard: [
-      [{ text: "🆕 Свіже", callback_data: "latest" }, { text: "🗂 Теми", callback_data: "topics" }],
-    ],
-  };
-}
-
-function buildSettingsInlineKeyboard(preferences) {
-  const min = preferences.minPriority;
-  const topics = preferences.topics || [];
-
-  const topicButton = (label, value) => ({
-    text: `${topics.includes(value) ? "✅" : "▫️"} ${label}`,
-    callback_data: `settings:topic:${value}`,
-  });
-
-  return {
-    inline_keyboard: [
-      [
-        { text: `${min === "P0" ? "✅" : "▫️"} Тільки P0`, callback_data: "settings:min:P0" },
-        { text: `${min === "P1" ? "✅" : "▫️"} P0 + P1`, callback_data: "settings:min:P1" },
-      ],
-      [
-        { text: `${min === "P2" ? "✅" : "▫️"} Усе`, callback_data: "settings:min:P2" },
-        { text: `${preferences.digestOnly ? "✅" : "▫️"} Тільки digest`, callback_data: "settings:digest:toggle" },
-      ],
-      [topicButton("Vue", "vue"), topicButton("Nuxt", "nuxt"), topicButton("Pinia", "pinia")],
-      [topicButton("JS/TS", "javascript"), topicButton("CSS/UI", "css"), topicButton("Tailwind", "tailwind")],
-      [topicButton("Shopify", "shopify"), topicButton("Cloudflare", "cloudflare")],
-      [{ text: "🧹 Очистити теми", callback_data: "settings:topic:clear" }],
-    ],
-  };
-}
 
 async function createItemId(item) {
   return sha256(`${item.source}:${item.url}:${item.title}`);
@@ -4794,4 +4448,29 @@ export const __test = {
   sortItemsByDateDesc,
   filterItemsWithinHours,
 };
+
+function getAiClient(env) {
+  return createAiClient(env, {
+    normalizeBaseUrl,
+    normalizeList,
+    clampNumber,
+    delay,
+    safeErrorMessage,
+    retryableStatuses: AI_RETRYABLE_STATUSES,
+    maxRetries: AI_MAX_RETRIES,
+    retryBaseDelayMs: AI_RETRY_BASE_DELAY_MS,
+  });
+}
+
+async function callAiText(env, options) {
+  return getAiClient(env).callText(options);
+}
+
+async function requestAiCompletionWithFallback(env, options, dependencies = {}) {
+  return getAiClient(env).requestCompletionWithFallback(options, dependencies);
+}
+
+async function requestAiCompletion(env, options, dependencies = {}) {
+  return getAiClient(env).requestCompletion(options, dependencies);
+}
 

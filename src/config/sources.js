@@ -1,0 +1,30 @@
+export const CONTENT_SOURCES = [
+  { id: "shopify", name: "Shopify Developer Changelog", feedUrl: "https://shopify.dev/changelog/feed.xml", format: "rss", tags: ["shopify"] },
+  { id: "vue-blog", name: "Vue Official Blog", feedUrl: "https://blog.vuejs.org/feed.rss", format: "rss", tags: ["vue", "javascript", "ui"] },
+  { id: "vue", name: "Vue Releases", feedUrl: "https://github.com/vuejs/core/releases.atom", format: "atom", tags: ["vue", "javascript", "ui"] },
+  { id: "nuxt-blog", name: "Nuxt Official Blog", feedUrl: "https://nuxt.com/blog/rss.xml", format: "rss", tags: ["nuxt", "vue", "ssr"] },
+  { id: "nuxt", name: "Nuxt Releases", feedUrl: "https://github.com/nuxt/nuxt/releases.atom", format: "atom", tags: ["nuxt", "vue", "ssr"] },
+  { id: "nuxt-ui", name: "Nuxt UI Releases", feedUrl: "https://github.com/nuxt/ui/releases.atom", format: "atom", tags: ["nuxt", "vue", "ui", "tailwind"] },
+  { id: "nitro", name: "Nitro Releases", feedUrl: "https://github.com/nitrojs/nitro/releases.atom", format: "atom", tags: ["nuxt", "nitro", "ssr", "javascript"] },
+  { id: "pinia", name: "Pinia Releases", feedUrl: "https://github.com/vuejs/pinia/releases.atom", format: "atom", tags: ["pinia", "vue", "state-management"] },
+  { id: "vite", name: "Vite Releases", feedUrl: "https://github.com/vitejs/vite/releases.atom", format: "atom", tags: ["vite", "javascript", "build-tools"] },
+  { id: "vite-blog", name: "Vite Official Blog", feedUrl: "https://vite.dev/blog.rss", format: "rss", tags: ["vite", "javascript", "build-tools"] },
+  { id: "vitest", name: "Vitest Releases", feedUrl: "https://github.com/vitest-dev/vitest/releases.atom", format: "atom", tags: ["vitest", "vite", "javascript", "testing"] },
+  { id: "playwright", name: "Playwright Releases", feedUrl: "https://github.com/microsoft/playwright/releases.atom", format: "atom", tags: ["playwright", "javascript", "testing", "browser"] },
+  { id: "tailwind", name: "Tailwind CSS Releases", feedUrl: "https://github.com/tailwindlabs/tailwindcss/releases.atom", format: "atom", tags: ["tailwind", "css", "ui"] },
+  { id: "tailwind-blog", name: "Tailwind CSS Blog", feedUrl: "https://tailwindcss.com/feeds/feed.xml", format: "rss", tags: ["tailwind", "css", "ui"] },
+  { id: "typescript", name: "TypeScript Releases", feedUrl: "https://github.com/microsoft/TypeScript/releases.atom", format: "atom", tags: ["typescript", "javascript"] },
+  { id: "sass", name: "Sass Releases", feedUrl: "https://github.com/sass/dart-sass/releases.atom", format: "atom", tags: ["sass", "scss", "css"] },
+  { id: "node", name: "Node.js Releases", feedUrl: "https://github.com/nodejs/node/releases.atom", format: "atom", tags: ["node", "javascript", "runtime"] },
+  { id: "mdn", name: "MDN Blog", feedUrl: "https://developer.mozilla.org/en-US/blog/rss.xml", format: "rss", tags: ["javascript", "css", "web-platform", "a11y"] },
+  { id: "webdev", name: "web.dev Blog", feedUrl: "https://web.dev/static/blog/feed.xml", format: "rss", tags: ["javascript", "css", "web-platform", "performance", "a11y"] },
+  { id: "cloudflare", name: "Cloudflare Developer Changelog", feedUrl: "https://developers.cloudflare.com/changelog/rss/index.xml", format: "rss", tags: ["cloudflare", "workers", "edge"] },
+  { id: "cloudflare-blog", name: "Cloudflare Blog", feedUrl: "https://blog.cloudflare.com/rss/", format: "rss", tags: ["cloudflare", "workers", "edge", "security", "web-platform"] },
+];
+
+export const APPROVED_ARTICLE_HOSTS = new Set([
+  "shopify.dev", "github.com", "nuxt.com", "vuejs.org", "blog.vuejs.org", "pinia.vuejs.org",
+  "vite.dev", "tailwindcss.com", "typescriptlang.org", "devblogs.microsoft.com", "sass-lang.com",
+  "nodejs.org", "developer.mozilla.org", "developers.cloudflare.com", "blog.cloudflare.com",
+  "web.dev", "vitest.dev",
+]);

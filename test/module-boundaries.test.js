@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createAiClient } from "../src/enrichment/ai-client.js";
-import { filterFreshFeedItems, filterItemsWithinHours, isHighSignalFeedItem } from "../src/ingest/feed-utils.js";
+import { filterFreshFeedItems, filterItemsWithinHours, filterItemsByLookback, isHighSignalFeedItem } from "../src/ingest/feed-utils.js";
 import { createNewsRepository } from "../src/storage/news-repository.js";
 import { __test } from "../worker.js";
 import { createTelegramClient } from "../src/telegram/client.js";
@@ -12,6 +12,17 @@ import { createSubscriberRepository } from "../src/storage/subscriber-repository
 import { createTelegramDelivery } from "../src/telegram/delivery.js";
 import { createTelegramWebhookProcessor } from "../src/telegram/webhook.js";
 import { createTelegramUpdateHandler } from "../src/telegram/update-handler.js";
+import { createAiEditor } from "../src/enrichment/editor.js";
+import { createQualityGate } from "../src/enrichment/quality-gate.js";
+import { createArticleContext } from "../src/ingest/article-context.js";
+import { createTelegramFormatters } from "../src/telegram/formatters.js";
+import { createRunPipeline } from "../src/runtime/run-pipeline.js";
+import { createTelegramHandlers } from "../src/telegram/handlers.js";
+import { normalizeTelegramCommand, parseCommandArgs, parseOptionalIndex } from "../src/telegram/parsing.js";
+import { buildFallbackApplicationItems, buildFallbackChecklistItems } from "../src/enrichment/fallback-content.js";
+import { createEvidenceRules } from "../src/enrichment/evidence.js";
+import { createItemBuilder } from "../src/enrichment/item-builder.js";
+import { buildRemoveKeyboard, buildListInlineKeyboard, buildItemInlineKeyboard, buildSettingsInlineKeyboard } from "../src/telegram/keyboards.js";
 
 class MemoryKv {
   constructor(entries = {}) {
@@ -195,6 +206,145 @@ test("AI client validates required configuration and rejects empty responses", a
   }), /empty response/);
 });
 
+test("AI client callText uses configured model and rejects an empty fallback chain", async () => {
+  const client = createAiTestClient({ AI_MODEL: "" });
+  await assert.rejects(client.callText({ system: "s", prompt: "p" }), /Missing AI_MODEL/);
+});
+
+test("AI client reports exhausted transient retries", async () => {
+  const client = createAiTestClient();
+  await assert.rejects(client.requestCompletion({ system: "", prompt: "" }, {
+    maxRetries: 0,
+    fetchImpl: async () => new Response("", { status: 503 }),
+  }), /після 1 спроб/);
+});
+
+test("AI editor separates facts extraction and editorial summary execution", async () => {
+  const calls = [];
+  const editor = createAiEditor({}, {
+    callText: async (request) => { calls.push(["facts", request]); return "facts"; },
+    requestCompletionWithFallback: async (request) => { calls.push(["summary", request]); return "summary"; },
+  });
+  assert.equal(await editor.extractFacts({ system: "facts", prompt: "source" }), "facts");
+  assert.equal(await editor.summarize({ system: "editor", prompt: "facts", model: "primary" }), "summary");
+  assert.equal(calls[0][0], "facts");
+  assert.equal(calls[1][0], "summary");
+});
+
+test("quality gate keeps immediate delivery and publishability rules centralized", () => {
+  const gate = createQualityGate({ minPublishQuality: 70, minImmediateRelevance: 7, normalizeScore: (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback, hasContaminatedContent: (item) => Boolean(item.contaminated) });
+  assert.equal(gate.shouldSendImmediate({ priority: "P0" }), true);
+  assert.equal(gate.shouldSendImmediate({ priority: "P1", relevance: 7, benefit: 6, confidence: 6 }), true);
+  assert.equal(gate.shouldSendImmediate({ priority: "P2", relevance: 9, benefit: 8, confidence: 7 }), true);
+  assert.equal(gate.shouldSendImmediate({ priority: "P2", relevance: 2, benefit: 2, confidence: 2 }), false);
+  assert.equal(gate.isPublishableItem({ qualityScore: 90, verifiedFacts: ["a", "b"] }), true);
+  assert.equal(gate.isPublishableItem({ qualityScore: 90, verifiedFacts: ["a"], contaminated: true }), false);
+});
+
+test("article context keeps RSS fallback and rejects unsafe redirects", async () => {
+  const context = createArticleContext({
+    approvedHosts: new Set(["docs.example.test"]),
+    timeoutMs: 50,
+    maxChars: 500,
+    fetchImpl: async (url) => {
+      if (url.endsWith("/redirect")) return new Response(null, { status: 302, headers: { location: "https://evil.example.test/article" } });
+      throw new Error("upstream unavailable");
+    },
+    readResponseTextLimited: async (response) => response.text(),
+    cleanHtml: (value) => String(value).replace(/\s+/g, " ").trim(),
+    safeIsoDate: () => "",
+  });
+
+  assert.deepEqual(await context.enrichItemWithArticleContext({ title: "RSS", url: "https://docs.example.test/article" }), {
+    title: "RSS", url: "https://docs.example.test/article", articleContext: "", contextSource: "rss",
+  });
+  await assert.rejects(context.fetchArticleContext("https://docs.example.test/redirect"), /Unsafe article redirect/);
+  await assert.rejects(context.fetchArticleContext("http://docs.example.test/article"), /Article host is not approved/);
+});
+
+test("Telegram formatter keeps compact cards actionable and escaped", () => {
+  const formatter = createTelegramFormatters({
+    normalizeStoredStructuredItem: (item) => item,
+    getPriorityBadge: () => "🟡",
+    getPriorityLabel: () => "важливо",
+    translateArea: (value) => value,
+    escapeHtml: (value) => String(value).replace(/</g, "&lt;").replace(/>/g, "&gt;"),
+    cleanStructuredText: (value) => value,
+    inferAudience: () => "розробникам",
+  });
+  const output = formatter.formatCompactItems([{ title: "<Feature>", area: "Nuxt", essence: "Зміна", todayAction: "Перевірити" }]);
+  assert.match(output, /&lt;Feature&gt;/);
+  assert.match(output, /Факт: Зміна/);
+  assert.match(output, /👉 \/full 1/);
+});
+
+test("run pipeline exposes a stable result boundary", () => {
+  const pipeline = createRunPipeline({
+    maxItemsPerRun: 3,
+    latestItemKeyPrefix: "latest:item:",
+    runLastKey: "run:last",
+    seenTtlSeconds: 60,
+    latestItemsLimit: 7,
+    lookbackDays: 90,
+    maxIndexedItemsPerSource: 2,
+  });
+  assert.deepEqual(pipeline.buildRunResultItem({ title: "Change", url: "https://example.test", impactTags: ["performance"] }, { rawAiSummary: "details" }), {
+    title: "Change", uaTitle: undefined, url: "https://example.test", priority: undefined, relevance: undefined,
+    area: undefined, qualityScore: undefined, impactTags: ["performance"], usedFallback: false,
+    fallbackReason: null, silent: false, ignoreSeen: false, rawAiPreview: "details",
+  });
+});
+
+test("Telegram handlers keep update and callback boundaries isolated", async () => {
+  const calls = [];
+  const handlers = createTelegramHandlers({
+    normalizeCommand: () => "/unknown",
+    parseArgs: () => [],
+    sendUnknownCommand: async (chatId) => calls.push(["unknown", chatId]),
+    answerCallbackQuery: async (_id, _env, text) => calls.push(["callback", text]),
+  });
+  await handlers.handleMessage({ message: { chat: { id: 7 }, text: "hello" } }, {});
+  await handlers.handleCallback({ id: "cb", message: { chat: { id: 7 } }, data: "other" }, {});
+  assert.deepEqual(calls, [["unknown", 7], ["callback", "Команду не розпізнано"]]);
+});
+
+test("Telegram parsing normalizes buttons, bot suffixes and indexes", () => {
+  assert.equal(normalizeTelegramCommand("🆕 останні"), "/latest");
+  assert.equal(normalizeTelegramCommand("/latest@frontend_radar_bot"), "/latest");
+  assert.deepEqual(parseCommandArgs("/full 3"), ["3"]);
+  assert.equal(parseOptionalIndex("2.9"), 2);
+  assert.equal(parseOptionalIndex("bad"), null);
+});
+
+test("fallback content stays source-area specific", () => {
+  assert.match(buildFallbackApplicationItems({}, "Nuxt")[0], /Nuxt/);
+  assert.match(buildFallbackChecklistItems({}, "Cloudflare")[1], /compatibility/);
+  assert.equal(buildFallbackChecklistItems({}, "Other").length, 3);
+});
+
+test("evidence rules keep tags source-aware and remove article UI noise", () => {
+  const rules = createEvidenceRules({
+    cleanStructuredText: (value) => String(value || "").trim(),
+    cleanHtml: (value) => String(value || "").replace(/<[^>]+>/g, " "),
+    normalizeList: (values) => [...new Set((values || []).map(String).filter(Boolean))],
+    normalizeTags: (values) => [...new Set((values || []).map((value) => String(value).toLowerCase()).filter(Boolean))],
+    buildSearchText: (item) => [item.title, item.summary, item.articleContext].filter(Boolean).join(" "),
+  });
+  assert.deepEqual(rules.extractEvidenceFacts({ summary: "First confirmed change affects the production API behavior. Second confirmed effect changes the rendering pipeline." }), ["First confirmed change affects the production API behavior.", "Second confirmed effect changes the rendering pipeline."]);
+  assert.deepEqual(rules.constrainImpactTagsToEvidence(["security", "performance-opportunity"], { sourceId: "vue", summary: "Improves performance" }), ["performance-opportunity"]);
+  assert.equal(rules.isContaminatedText("Reload to refresh your session."), true);
+  assert.equal(rules.buildNotFor("Nuxt"), "Проєкти без Nuxt, SSR або Nitro.");
+});
+
+test("item builder merges normalized AI fields with source metadata", () => {
+  const builder = createItemBuilder({ normalizeStructuredSummary: (summary) => ({ ...summary, uaTitle: "Нова картка", qualityScore: 88 }), now: () => "2026-11-17T00:00:00.000Z" });
+  const item = builder.buildEnrichedItem({ title: "Source", url: "https://example.test" }, { essence: "Change" }, { itemId: "id", usedFallback: true, fallbackReason: "test" });
+  assert.equal(item.itemId, "id");
+  assert.equal(item.uaTitle, "Нова картка");
+  assert.equal(item.usedFallback, true);
+  assert.equal(item.savedAt, "2026-11-17T00:00:00.000Z");
+});
+
 test("feed filters reject future, stale, prerelease and routine patch noise", () => {
   const now = Date.parse("2026-11-17T12:00:00.000Z");
   const items = [
@@ -214,6 +364,24 @@ test("feed filters reject future, stale, prerelease and routine patch noise", ()
 test("feed high-signal filter rejects records without required publication data", () => {
   assert.equal(isHighSignalFeedItem({ title: "No URL", publishedAt: "2026-11-17" }), false);
   assert.equal(isHighSignalFeedItem({ title: "No date", url: "https://example.test/item" }), false);
+});
+
+test("feed lookback keeps undated records for later validation", () => {
+  const now = Date.parse("2026-11-17T12:00:00.000Z");
+  const kept = filterItemsByLookback([
+    { title: "Undated" },
+    { title: "Recent", publishedAt: "2026-11-16T12:00:00.000Z" },
+    { title: "Old", publishedAt: "2026-11-01T12:00:00.000Z" },
+  ], 7, now);
+  assert.deepEqual(kept.map((item) => item.title), ["Undated", "Recent"]);
+});
+
+test("feed filter rejects routine Cloudflare, prerelease and generic release noise", () => {
+  const base = { url: "https://example.test/item", publishedAt: "2026-11-17T10:00:00Z" };
+  assert.equal(isHighSignalFeedItem({ ...base, title: "Cloudflare One Client update", sourceId: "cloudflare" }), false);
+  assert.equal(isHighSignalFeedItem({ ...base, title: "v1.2.3", sourceId: "node", summary: "Refer to the changelog" }), false);
+  assert.equal(isHighSignalFeedItem({ ...base, title: "Nuxt nightly", sourceId: "nuxt" }), false);
+  assert.equal(isHighSignalFeedItem({ ...base, title: "Node security release v1.2.3", sourceId: "node" }), true);
 });
 
 test("RSS source fetch normalizes valid items and rejects upstream errors", async () => {
@@ -401,6 +569,24 @@ test("subscriber repository records feedback and applies preference weights", as
   assert.equal((await kv.get("feedback:7:a")) !== null, true);
 });
 
+test("subscriber repository updates a new subscriber and generates feedback IDs", async () => {
+  const kv = new MemoryKv();
+  const repository = createSubscriberRepository({ SHOPIFY_RADAR_KV: kv }, {
+    subscriberPrefix: "telegram:subscriber:", subscribersKey: "telegram:subscribers", feedbackPrefix: "feedback:",
+    subscribersLimit: 50, feedbackTtlSeconds: 3600,
+    readJsonObjectsByPrefix: async () => [], readJsonArray: async () => [],
+    normalizePreferences: (value = {}) => ({ minPriority: value.minPriority || "P1", topics: value.topics || [], digestOnly: Boolean(value.digestOnly) }),
+    normalizeTags: (tags) => [...new Set(tags.flatMap((tag) => String(tag || "").split(/[,\s]+/).filter(Boolean)))],
+    normalizeStoredStructuredItem: (item) => item,
+    normalizeScore: (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback,
+    createItemId: async () => "generated-id",
+  });
+  const updated = await repository.updateSubscriber("new", (subscriber) => ({ ...subscriber, preferences: { minPriority: "P0" } }));
+  assert.equal(updated.chatId, "new");
+  await repository.saveContentFeedback("new", { area: "Nuxt", devTags: [], impactTags: [] }, "useful");
+  assert.ok(await kv.get("feedback:new:generated-id"));
+});
+
 test("Telegram delivery isolates subscriber failures and reports skipped recipients", async () => {
   const sent = [];
   const delivery = createTelegramDelivery({
@@ -467,4 +653,17 @@ test("Telegram update handler routes callback queries and messages to separate b
   await handle({ callback_query: { id: "cb" } }, {});
   await handle({ message: { text: "/latest" } }, {});
   assert.deepEqual(calls, [["callback", { id: "cb" }], ["message", { message: { text: "/latest" } }]]);
+});
+
+test("Telegram keyboards cover empty references, removal and preference states", () => {
+  assert.deepEqual(buildRemoveKeyboard(), { remove_keyboard: true });
+  assert.equal(buildListInlineKeyboard([{ title: "legacy" }])[0]?.inline_keyboard?.length, undefined);
+  const list = buildListInlineKeyboard([{ title: "legacy" }, { itemId: "abc" }]);
+  assert.match(list.inline_keyboard[0][0].callback_data, /^card:0$/);
+  assert.match(list.inline_keyboard[1][0].callback_data, /^article:abc/);
+  assert.equal(buildItemInlineKeyboard({ url: "https://example.test" }).inline_keyboard.length, 1);
+  const settings = buildSettingsInlineKeyboard({ minPriority: "P2", topics: ["vue"], digestOnly: true });
+  assert.match(settings.inline_keyboard[0][0].text, /▫️/);
+  assert.match(settings.inline_keyboard[1][0].text, /✅ Усе/);
+  assert.match(settings.inline_keyboard[1][1].text, /✅ Тільки digest/);
 });

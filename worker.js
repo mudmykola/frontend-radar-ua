@@ -59,6 +59,9 @@ const LATEST_DISPLAY_LIMIT = 7;
 const FULL_DISPLAY_LIMIT = 7;
 const LOOKBACK_DAYS = 90;
 const FRESH_NEWS_WINDOW_DAYS = 7;
+const TELEGRAM_LATEST_WINDOW_HOURS = 48;
+const TELEGRAM_LATEST_SYNC_MAX_AGE_MINUTES = 10;
+const TELEGRAM_LATEST_SYNC_LOCK_KEY = "telegram:latest:sync:lock";
 const AI_REENRICH_INTERVAL_HOURS = 0.5;
 const SEEN_TTL_DAYS = 100;
 const SEEN_TTL_SECONDS = 60 * 60 * 24 * SEEN_TTL_DAYS;
@@ -69,7 +72,7 @@ const SUBSCRIBERS_KEY = "telegram:subscribers";
 const BOOTSTRAP_CHECKED_KEY = "latest:bootstrap:checked";
 const RUN_LAST_KEY = "run:last";
 const TELEGRAM_PROFILE_VERSION_KEY = "telegram:profile:version";
-const TELEGRAM_PROFILE_VERSION = "v14";
+const TELEGRAM_PROFILE_VERSION = "v15";
 
 const LATEST_ITEMS_LIMIT = 50;
 const DIGEST_ITEMS_LIMIT = 60;
@@ -1265,8 +1268,31 @@ function parseOptionalIndex(value) {
   return Math.max(1, Math.floor(index));
 }
 
-async function ensureInitialNews(env) {
-  return sortItemsByDateDesc(await getLatestItems(env));
+async function ensureInitialNews(env, options = {}) {
+  return sortItemsByDateDesc(await getLatestItems(env, options));
+}
+
+async function ensureLatestFeedSync(env) {
+  const lastRun = await getLastRun(env);
+  const lastRunTime = new Date(lastRun?.time || 0).getTime();
+  const maxAgeMs = TELEGRAM_LATEST_SYNC_MAX_AGE_MINUTES * 60 * 1000;
+
+  if (Number.isFinite(lastRunTime) && Date.now() - lastRunTime < maxAgeMs) {
+    return { ran: false, lastRun };
+  }
+
+  if (await env.SHOPIFY_RADAR_KV.get(TELEGRAM_LATEST_SYNC_LOCK_KEY)) {
+    return { ran: false, lastRun, locked: true };
+  }
+
+  await env.SHOPIFY_RADAR_KV.put(TELEGRAM_LATEST_SYNC_LOCK_KEY, "1", { expirationTtl: 60 });
+
+  try {
+    const result = await run(env, { silent: true, limit: MAX_ITEMS_PER_RUN });
+    return { ran: true, lastRun: result };
+  } finally {
+    await env.SHOPIFY_RADAR_KV.delete(TELEGRAM_LATEST_SYNC_LOCK_KEY);
+  }
 }
 
 async function bootstrapLatestNews(env) {
@@ -1645,16 +1671,19 @@ function formatStopMessage() {
 }
 
 async function sendLatest(chatId, env) {
-  const latest = await personalizeItems(chatId, await ensureInitialNews(env), env);
+  const sync = await ensureLatestFeedSync(env);
+  const latest = await ensureInitialNews(env, { windowHours: TELEGRAM_LATEST_WINDOW_HOURS });
 
   if (!latest.length) {
     await sendTelegramRaw(
       chatId,
       [
-        "🧊 <b>Поки що немає збережених новин.</b>",
+        "🧊 <b>Свіжих новин за останні 48 годин немає.</b>",
         "",
-        "За останні 7 днів немає перевірених матеріалів, які пройшли контроль якості.",
-        "Спробуй /refresh або повернися трохи пізніше.",
+        sync.ran
+          ? "Я щойно перевірив офіційні джерела, але нових матеріалів не знайшов."
+          : "Офіційні джерела вже перевірялися нещодавно; нових матеріалів поки немає.",
+        "Старіші матеріали залишилися в /digest, але тут їх не показую як свіжі.",
       ].join("\n"),
       env,
       { replyMarkup: buildMainReplyKeyboard() }
@@ -1740,7 +1769,8 @@ function formatCompactItems(items) {
 }
 
 async function sendFullLatest(chatId, env, options = {}) {
-  const latest = await personalizeItems(chatId, await ensureInitialNews(env), env);
+  await ensureLatestFeedSync(env);
+  const latest = await ensureInitialNews(env, { windowHours: TELEGRAM_LATEST_WINDOW_HOURS });
   const items = latest.slice(0, FULL_DISPLAY_LIMIT);
 
   if (!items.length) {
@@ -1761,7 +1791,8 @@ async function sendFullLatest(chatId, env, options = {}) {
 }
 
 async function sendSingleCard(chatId, env, index = 1) {
-  const latest = await personalizeItems(chatId, await ensureInitialNews(env), env);
+  await ensureLatestFeedSync(env);
+  const latest = await ensureInitialNews(env, { windowHours: TELEGRAM_LATEST_WINDOW_HOURS });
   const items = latest.slice(0, FULL_DISPLAY_LIMIT);
   const safeIndex = Math.max(1, Math.min(Number(index) || 1, items.length || 1));
   const item = items[safeIndex - 1];
@@ -2652,6 +2683,15 @@ function filterFreshFeedItems(items, now = Date.now()) {
   return datedItems.filter((item) => {
     const timestamp = new Date(item.publishedAt).getTime();
     return timestamp >= cutoff && timestamp <= now + 5 * 60 * 1000;
+  });
+}
+
+function filterItemsWithinHours(items, hours, now = Date.now()) {
+  const cutoff = now - Number(hours) * 60 * 60 * 1000;
+
+  return sortItemsByDateDesc(items).filter((item) => {
+    const timestamp = new Date(item?.publishedAt || "").getTime();
+    return Number.isFinite(timestamp) && timestamp >= cutoff && timestamp <= now + 5 * 60 * 1000;
   });
 }
 
@@ -3552,10 +3592,14 @@ async function saveDigestItem(item, env) {
   );
 }
 
-async function getLatestItems(env) {
-  return filterFreshFeedItems(
+async function getLatestItems(env, options = {}) {
+  const items = filterFreshFeedItems(
     await readStoredItems(env, LATEST_ITEM_KEY_PREFIX, LATEST_ITEMS_KEY, LATEST_ITEMS_LIMIT)
   ).filter(isPublishableItem);
+
+  return options.windowHours
+    ? filterItemsWithinHours(items, options.windowHours)
+    : items;
 }
 
 async function getDigestItems(env) {
@@ -4747,5 +4791,7 @@ export const __test = {
   buildDigestInlineKeyboard,
   buildAuditInlineKeyboard,
   buildAdminInlineKeyboard,
+  sortItemsByDateDesc,
+  filterItemsWithinHours,
 };
 

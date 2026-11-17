@@ -79,7 +79,7 @@ const SUBSCRIBERS_KEY = "telegram:subscribers";
 const BOOTSTRAP_CHECKED_KEY = "latest:bootstrap:checked";
 const RUN_LAST_KEY = "run:last";
 const TELEGRAM_PROFILE_VERSION_KEY = "telegram:profile:version";
-const TELEGRAM_PROFILE_VERSION = "v16";
+const TELEGRAM_PROFILE_VERSION = "v18";
 
 const LATEST_ITEMS_LIMIT = 50;
 const DIGEST_ITEMS_LIMIT = 60;
@@ -248,6 +248,7 @@ async function configureTelegramProfile(env) {
           "Читаю офіційні frontend release notes і пояснюю українською: що змінилося, де це корисно, чи стосується твого стеку та що робити далі.",
       },
     ],
+    ["deleteMyCommands", {}],
     ["setMyCommands", { commands }],
   ];
 
@@ -343,6 +344,11 @@ function validateEnv(env) {
 }
 
 async function handleTelegramWebhookOnce(update, env) {
+  try {
+    await ensureTelegramProfileVersion(env);
+  } catch (error) {
+    console.error("Telegram profile refresh failed:", safeErrorMessage(error));
+  }
   return createTelegramWebhookProcessor(env, {
     keyPrefix: TELEGRAM_UPDATE_KEY_PREFIX,
     ttlSeconds: TELEGRAM_UPDATE_TTL_SECONDS,
@@ -626,9 +632,9 @@ async function sendWelcome(chatId, env, subscriber = null) {
     "",
     "📌 <b>Швидка навігація:</b>",
     "• 🆕 Свіже — останні перевірені сигнали",
-    "• 🎯 Для мене — стрічка за твоїми налаштуваннями",
-    "• 🧰 Практика — зміни з конкретною дією або чеклистом",
-    "• 🗂 Теми — Frontend, AI, Toolchain, Git/DevOps, Browser, Shopify, Cloudflare",
+    "• 🔥 Важливе — P0/P1 зміни, які варто перевірити",
+    "• ✅ Дії сьогодні — зміни з конкретним наступним кроком",
+    "• 🗂 Research теми — Frontend, AI, Toolchain, Git/DevOps, Browser, Shopify, Cloudflare",
     "• 📖 Повний розбір — /full або /full 3",
     "• 🧠 Digest — коротке зведення",
     "",
@@ -719,8 +725,7 @@ async function sendItemsList(chatId, env, title, items) {
       "",
       "━━━━━━━━━━━━━━━",
       "",
-      "📖 /full 1 — практичний розбір першої новини",
-      "Натисни кнопку під потрібною новиною, щоб відкрити її окремо.",
+      "📖 Натисни «Розбір N» під потрібною новиною, щоб відкрити точний розбір.",
     ].join("\n"),
     env,
     {
@@ -2042,37 +2047,45 @@ function formatStoredFullItem(rawItem, meta = {}) {
   const checks = normalizeList(item.checklistItems).slice(0, 3);
   const hasConfirmedBefore = item.before && !/не підтверджено|не описує/i.test(item.before);
 
+  const action = item.todayAction || item.clientTask || "дія не потрібна; зберегти як довідку";
+  const importance = item.aiConclusion || item.importance || item.essence;
+  const isInformational = priority === "P2" || /дія не потрібна|лише знати/i.test(action);
+
   return [
     counter,
     `🧩 <code>${escapeHtml(area)}</code> · ${escapeHtml(date)}`,
     `🔥 <b>${escapeHtml(sourceTitle)}</b>`,
     "",
-    "🧠 <b>Що саме змінилося</b>",
+    "🧠 <b>Що змінилося</b>",
     escapeHtml(item.essence || item.aiConclusion),
     "",
-    `📌 <b>Підтверджено джерелом</b> · ${escapeHtml(item.source || "офіційне джерело")}`,
+    "🎯 <b>Чому це важливо</b>",
+    escapeHtml(importance),
+    "",
+    "👤 <b>Кому це стосується</b>",
+    escapeHtml(item.audience),
+    "",
+    "✅ <b>Що зробити</b>",
+    escapeHtml(action),
+    "",
+    `🔍 <b>Перевірено:</b> ${escapeHtml(item.source || "офіційне джерело")}`,
     facts.map((fact) => `• ${escapeHtml(fact)}`).join("\n"),
     "",
     hasConfirmedBefore ? "🔄 <b>Було → тепер</b>" : "",
     hasConfirmedBefore ? `Було: ${escapeHtml(item.before)}` : "",
     hasConfirmedBefore ? `Тепер: ${escapeHtml(item.after)}` : "",
     "",
-    "👤 <b>Кого це стосується</b>",
-    escapeHtml(item.audience),
+    item.devIdea && item.devIdea !== importance ? "💡 <b>Приклад</b>" : "",
+    item.devIdea && item.devIdea !== importance ? escapeHtml(item.devIdea) : "",
     "",
-    "💡 <b>Практичний приклад</b>",
-    escapeHtml(item.devIdea || item.aiConclusion),
-    "",
-    "👉 <b>Що зробити зараз</b>",
-    escapeHtml(item.todayAction || item.clientTask),
-    "",
-    checks.length ? "🔍 <b>Де перевірити</b>" : "",
+    checks.length ? "📋 <b>Чеклист</b>" : "",
     checks.length ? checks.map((check) => `□ ${escapeHtml(check)}`).join("\n") : "",
     "",
-    `🚫 <b>Коли можна пропустити:</b> ${escapeHtml(item.notFor)}`,
-    `⏱ <b>Оцінка:</b> ${escapeHtml(item.timeEstimate)} · <b>Рішення:</b> ${escapeHtml(item.recommendation || inferRecommendation(priority, relevance))}`,
+    isInformational
+      ? "ℹ️ <b>Статус:</b> лише до відома — дія зараз не потрібна"
+      : `⏱ <b>Оцінка:</b> ${escapeHtml(item.timeEstimate)} · <b>Рішення:</b> ${escapeHtml(item.recommendation || inferRecommendation(priority, relevance))}`,
     "",
-    `🔗 <a href="${escapeHtml(item.url)}"><b>Офіційне джерело</b></a>`,
+    `🔗 <a href="${escapeHtml(item.url)}"><b>Відкрити офіційне джерело</b></a>`,
   ]
     .filter(Boolean)
     .join("\n")

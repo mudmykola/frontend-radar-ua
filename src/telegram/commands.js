@@ -2,8 +2,9 @@ export function buildTelegramCommandMenu() {
   return [
     ["start", "Запустити Radar"],
     ["latest", "Свіжі перевірені новини"],
-    ["practice", "Новини з конкретною дією"],
-    ["topics", "Обрати технологічну екосистему"],
+    ["important", "P0/P1 зміни, які варто перевірити"],
+    ["practice", "Дії на сьогодні"],
+    ["topics", "AI, frontend, toolchain, Git та інші теми"],
     ["full", "Відкрити повний розбір"],
     ["digest", "Коротке персональне зведення"],
     ["settings", "Налаштувати теми й пріоритет"],

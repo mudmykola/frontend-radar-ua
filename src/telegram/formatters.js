@@ -13,10 +13,10 @@ export function createTelegramFormatters(options) {
       return [
         `${index + 1}. ${getPriorityBadge(priority)} <b>${escapeHtml(item.uaTitle || item.title || "Без назви")}</b>`,
         `${date} · <code>${escapeHtml(area)}</code> · ${escapeHtml(getPriorityLabel(priority))}`,
-        `Факт: ${escapeHtml(item.essence || item.aiConclusion || "")}`,
+        `Що змінилося: ${escapeHtml(item.essence || item.aiConclusion || "")}`,
         `Кому: ${escapeHtml(audience)}`,
-        `Дія: ${escapeHtml(item.todayAction || item.clientTask || "")}`,
-        `👉 /full ${index + 1}`,
+        `Що зробити: ${escapeHtml(item.todayAction || item.clientTask || "")}`,
+        `👉 Натисни «Розбір ${index + 1}» під повідомленням`,
       ].filter(Boolean).join("\n");
     }).join("\n\n");
   }

@@ -23,6 +23,7 @@ export function createTelegramHandlers(options) {
     if (command === "/start") return sendWelcome(chatId, env, await saveSubscriber(chatId, message, env));
     if (command === "/stop") { await removeSubscriber(chatId, env); return sendTelegramRaw(chatId, formatStopMessage(), env, { replyMarkup: removeKeyboard() }); }
     if (command === "/latest") { await saveSubscriber(chatId, message, env); return sendLatest(chatId, env); }
+    if (command === "/important") return filtered(chatId, message, env, "🔥 ВАЖЛИВІ ЗМІНИ", "🔥 Важливих змін поки немає", (item) => item.priority === "P0" || item.priority === "P1");
     if (command === "/practice") return filtered(chatId, message, env, "🧰 ПРАКТИЧНІ ЗМІНИ", "🧰 Практичних змін поки немає", (item) => Boolean((item.todayAction || item.clientTask) && ((item.applicationItems || []).length || (item.checklistItems || []).length)));
     if (command === "/topics") { await saveSubscriber(chatId, message, env); return sendTopics(chatId, env); }
     if (command === "/full") { await saveSubscriber(chatId, message, env); return sendFullLatest(chatId, env, { singleIndex: parseIndex(args[0]) }); }

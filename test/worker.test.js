@@ -421,12 +421,14 @@ test("full card explains the change plainly with context, example, and one actio
     usedFallback: false,
   });
 
-  assert.match(message, /Що саме змінилося/);
-  assert.match(message, /Підтверджено джерелом/);
+  assert.match(message, /Що змінилося/);
+  assert.match(message, /Чому це важливо/);
+  assert.match(message, /Що зробити/);
+  assert.match(message, /Перевірено/);
   assert.match(message, /Було → тепер/);
-  assert.match(message, /Практичний приклад/);
-  assert.match(message, /Що зробити зараз/);
-  assert.match(message, /Коли можна пропустити/);
+  assert.match(message, /Приклад/);
+  assert.doesNotMatch(message, /Що зробити зараз/);
+  assert.doesNotMatch(message, /Коли можна пропустити/);
   assert.doesNotMatch(message, /AI quality|Релевантність|Впевненість/);
   assert.ok(message.length < 2400);
 });
@@ -717,13 +719,14 @@ test("full command resolves the visible list snapshot instead of a changed curre
   assert.deepEqual(await __test.getVisibleTelegramList(42, { SHOPIFY_RADAR_KV: kv }), ["cloudflare-item", "github-item"]);
 });
 
-test("v15 keeps the main Telegram menu compact and groups topics separately", () => {
+test("v18 keeps the research-oriented Telegram menu and groups topics separately", () => {
   const mainKeyboard = __test.buildMainReplyKeyboard().keyboard.flat().map((button) => button.text);
   assert.deepEqual(mainKeyboard, [
     "🆕 Свіже",
-    "🎯 Для мене",
-    "🧰 Практика",
-    "🗂 Теми",
+    "🔥 Важливе",
+    "✅ Дії сьогодні",
+    "🧠 Зведення",
+    "🗂 Research теми",
     "⚙️ Налаштування",
     "ℹ️ Допомога",
   ]);
@@ -757,6 +760,7 @@ test("Telegram command menu exposes only the user-facing navigation", () => {
   assert.deepEqual(names, [
     "start",
     "latest",
+    "important",
     "practice",
     "topics",
     "full",
@@ -771,7 +775,7 @@ test("Telegram command menu exposes only the user-facing navigation", () => {
   assert.ok(!names.includes("stats"));
   assert.ok(!names.includes("refresh"));
   assert.ok(commands.every((command) => !/shopify/i.test(command.description)));
-  assert.ok(commands.some((command) => command.command === "topics" && /технологічну/i.test(command.description)));
+  assert.ok(commands.some((command) => command.command === "topics" && /AI, frontend/i.test(command.description)));
 });
 
 test("fresh feed order is date-first even when an older item has stronger relevance", () => {

@@ -1,10 +1,12 @@
 const BUTTON_COMMANDS = {
   "🆕 останні": "/latest", "🆕 свіже": "/latest", "🎯 для мене": "/latest",
   "🧰 практика": "/practice", "🗂 теми": "/topics", "📖 повні розбори": "/full",
+  "🔥 важливе": "/important", "✅ дії сьогодні": "/practice", "🧠 зведення": "/digest",
+  "🗂 research теми": "/topics",
   "🚨 критичні": "/p0", "🎨 themes": "/themes", "🎨 теми": "/themes",
   "⚡ performance": "/performance", "⚡ швидкість": "/performance", "💚 vue": "/vue",
   "🟢 nuxt": "/nuxt", "⚡ js/ts": "/js", "🎨 css/ui": "/css", "☁️ cloudflare": "/cloudflare",
-  "🛍 shopify": "/shopify", "🧠 digest": "/digest", "🧠 зведення": "/digest",
+  "🛍 shopify": "/shopify", "🧠 digest": "/digest",
   "✅ audit": "/audit", "✅ аудит": "/audit", "⚙️ settings": "/settings",
   "⚙️ налаштування": "/settings", "ℹ️ допомога": "/help", "📊 stats": "/stats",
 };

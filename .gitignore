@@ -1,0 +1,45 @@
+node_modules/
+.wrangler/
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+!.env.example
+
+# Local agent, assistant, and instruction state
+.agents/
+.codex/
+.claude/
+.cursor/
+AGENTS.md
+**/AGENTS.md
+CLAUDE.md
+CODEX.md
+*.instructions.md
+.github/copilot-instructions.md
+.github/instructions/
+
+# IDE and OS metadata
+.idea/
+.vscode/
+.DS_Store
+
+# Credentials, certificates, and local secrets
+.secrets/
+secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+credentials*.json
+service-account*.json
+.npmrc
+
+# Generated/local artifacts
+coverage/
+dist/
+build/
+tmp/
+*.local.*
+*.log
+

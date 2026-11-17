@@ -762,3 +762,23 @@ test("Telegram command menu exposes only the user-facing navigation", () => {
   assert.ok(!names.includes("stats"));
   assert.ok(!names.includes("refresh"));
 });
+
+test("fresh feed order is date-first even when an older item has stronger relevance", () => {
+  const ordered = __test.sortItemsByDateDesc([
+    { title: "Older high-priority item", relevance: 10, publishedAt: "2026-11-10T10:00:00.000Z" },
+    { title: "Newest release", relevance: 5, publishedAt: "2026-11-16T10:00:00.000Z" },
+  ]);
+
+  assert.equal(ordered[0].title, "Newest release");
+  assert.equal(ordered[1].title, "Older high-priority item");
+});
+
+test("latest Telegram window hides items older than 48 hours", () => {
+  const now = Date.parse("2026-11-17T12:00:00.000Z");
+  const items = __test.filterItemsWithinHours([
+    { title: "Fresh", publishedAt: "2026-11-16T12:01:00.000Z" },
+    { title: "Too old", publishedAt: "2026-11-15T11:59:00.000Z" },
+  ], 48, now);
+
+  assert.deepEqual(items.map((item) => item.title), ["Fresh"]);
+});

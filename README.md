@@ -138,7 +138,7 @@ Production Worker історично має ім’я `shopify-radar-ua`. Це �
 
 ## Test workflow
 
-- `pnpm test` — 91 regression and integration tests with serialized execution;
+- `pnpm test` — 92 regression and integration tests with serialized execution;
 - `pnpm run test:coverage` — Node test coverage report for Worker and bounded modules;
 - `pnpm run check` — syntax validation;
 - `pnpm exec wrangler deploy --dry-run` — deployment bundle and bindings validation.

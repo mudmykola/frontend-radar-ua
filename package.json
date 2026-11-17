@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "check": "node --check worker.js",
-    "test": "node --test",
+    "test": "node --test --test-concurrency=1",
+    "test:coverage": "node --experimental-test-coverage --test --test-concurrency=1",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "ship": "pnpm run check && pnpm test && pnpm exec wrangler deploy --dry-run && pnpm exec wrangler deploy && curl -sS https://shopify-radar-ua.tovarinfobud.workers.dev/health",

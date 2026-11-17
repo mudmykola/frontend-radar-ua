@@ -51,7 +51,7 @@ export function createNewsRepository(env, options) {
       if (item?.url) itemsByUrl.set(item.url, item);
     }
 
-    return sortBy([...itemsByUrl.values()]).slice(0, limit);
+    return sortByDate([...itemsByUrl.values()]).slice(0, limit);
   }
 
   async function readJsonObjectsByPrefix(prefix, limit) {

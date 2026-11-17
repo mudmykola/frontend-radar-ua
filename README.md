@@ -119,6 +119,15 @@ Production Worker історично має ім’я `shopify-radar-ua`. Це �
 3. Optionally set `ADMIN_TELEGRAM_CHAT_ID` and `TELEGRAM_CHAT_ID`.
 4. Run `pnpm dev`.
 
+## Test workflow
+
+- `pnpm test` — 59 regression and integration tests with serialized execution;
+- `pnpm run test:coverage` — Node test coverage report for Worker and bounded modules;
+- `pnpm run check` — syntax validation;
+- `pnpm exec wrangler deploy --dry-run` — deployment bundle and bindings validation.
+
+Тести покривають KV repository, Gemini retries/fallback, RSS/Atom freshness, Telegram webhook і topic flows, 48-годинне вікно, auth, payload limits, health/admin routes та Telegram profile configuration.
+
 Для повного циклу перевірки, deploy і production health-check використовуй одну команду:
 
 ```sh

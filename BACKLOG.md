@@ -4,6 +4,29 @@
 
 ## Done
 
+### [GH #8] Architecture: Extract HTTP and runtime boundaries from worker.js
+
+- Priority: High
+- Labels: `core`, `backend`, `api`, `Refactor`, `Improvement`
+- Assignee: mudmykola
+- Status: Done
+- Completion: Extracted scheduler/profile/digest orchestration, canonical HTTP route registry, path/method dispatch and all HTTP handler implementations into `src/runtime/` and `src/http/`. Removed the legacy HTTP handler body from `worker.js`; the Worker entrypoint now wires runtime boundaries only. `worker.js` reduced to 4,158 lines, 66 tests pass, and Wrangler dry-run passes.
+
+## Done
+
+### Architecture: Extract Telegram transport boundary v15.3
+
+- Priority: Medium
+- Labels: `core`, `backend`, `api`, `Refactor`, `Improvement`, `DX`
+- Assignee: tovarinfobud
+- Status: Done
+- Scope:
+  - move Telegram send/edit/callback transport out of `worker.js`;
+  - inject fetch and keep response/error behavior unchanged;
+  - add transport unit tests and update architecture documentation;
+  - preserve the Worker entrypoint and all existing Telegram flows.
+- Completion: Added `src/telegram/client.js`, delegated Worker transport wrappers to it, and expanded the suite to 63 passing tests. Production behavior remains unchanged; deploy pending explicit confirmation.
+
 ### Testing: Cover Worker runtime boundaries v15.2
 
 - Priority: High
@@ -16,7 +39,7 @@
   - add Telegram topic/latest integration tests with stale-record exclusion;
   - add webhook failure, idempotency, payload-limit, auth, health and configuration route tests;
   - add serialized test and coverage commands.
-- Completion: 59 tests pass. `pnpm run test:coverage` reports 51.07% total line coverage, 98.78% repository coverage and 95.05% AI-client coverage. The epic also caught and fixed an untested `sortBy` repository runtime bug.
+- Completion: 61 tests pass. `pnpm run test:coverage` reports the current Worker/module coverage and 98.78% repository coverage. The epic also caught and fixed an untested `sortBy` repository runtime bug and added RSS/Atom source integration coverage.
 
 ### Architecture: Split Worker into bounded modules v15.1
 

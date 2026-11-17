@@ -31,6 +31,11 @@ import {
   buildSettingsInlineKeyboard,
   buildTopicsInlineKeyboard,
 } from "./src/telegram/keyboards.js";
+import { createTelegramClient } from "./src/telegram/client.js";
+import { createScheduledHandler } from "./src/runtime/scheduled.js";
+import { createFetchRouter } from "./src/runtime/fetch-router.js";
+import { HTTP_ROUTES, createHttpRouteTable } from "./src/http/routes.js";
+import { createHttpHandlers } from "./src/http/handlers.js";
 
 const SERVICE_NAME = "Frontend Intelligence Radar UA";
 const SERVICE_VERSION = "v15.0";
@@ -108,346 +113,76 @@ const TECH_COMMAND_FILTERS = {
   "/shopify": { title: "🛍 SHOPIFY", emptyTitle: "🛍 Свіжих Shopify новин немає", tags: ["shopify", "liquid", "admin-api", "storefront-api"] },
 };
 
+const httpHandlers = createHttpHandlers({
+  serviceName: SERVICE_NAME,
+  serviceVersion: SERVICE_VERSION,
+  maxWebhookBodyBytes: MAX_WEBHOOK_BODY_BYTES,
+  minPublishQuality: MIN_PUBLISH_QUALITY,
+  methodNotAllowed,
+  isAdminAuthorized,
+  isTelegramWebhookAuthorized,
+  configureTelegramWebhook,
+  indexContentSources,
+  run,
+  getTelegramWebhookInfo,
+  handleTelegramWebhookOnce,
+  summarizeWithAi,
+  parseAiStructured,
+  isStructuredSummaryUseful,
+  buildEnrichedItem,
+  getSubscribers,
+  getLatestItems,
+  getDigestItems,
+  getLastRun,
+  buildStats,
+  latestNeedsBootstrap,
+  hasStructuredFields,
+  sendDailyDigest,
+  bootstrapLatestNews,
+  ensureInitialNews,
+  buildAuditData,
+  safeErrorMessage,
+});
+
+const HTTP_ROUTE_SUMMARY = HTTP_ROUTES.map(({ path }) => path).concat([
+  "/run?silent=1&limit=10",
+  "/run?silent=1&limit=10&ignoreSeen=1",
+  "/run?silent=1&limit=10&ignoreSeen=1&debug=1",
+]);
+
+const httpRouter = createFetchRouter({
+  routes: createHttpRouteTable(httpHandlers),
+  fallback: handleUnknownRoute,
+  methodNotAllowed,
+});
+
 export default {
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(handleScheduledRun(env));
+    ctx.waitUntil(createScheduledHandler({
+      ensureProfile: () => ensureTelegramProfileVersion(env),
+      run: () => run(env),
+      sendDigest: () => sendDailyDigest(env),
+      dailyDigestHour: DAILY_DIGEST_UTC_HOUR,
+    })());
   },
 
   async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-
-    if (url.pathname === "/health") {
-      if (request.method !== "GET") return methodNotAllowed(["GET"]);
-      return Response.json({
-        ok: true,
-        service: `${SERVICE_NAME} ${SERVICE_VERSION}`,
-        time: new Date().toISOString(),
-      });
-    }
-
-    if (url.pathname === "/configure-telegram-webhook") {
-      if (request.method !== "POST") return methodNotAllowed(["POST"]);
-      if (!(await isTelegramWebhookAuthorized(request, env))) {
-        return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-      }
-
-      try {
-        const webhook = await configureTelegramWebhook(request, env);
-        return Response.json({ ok: true, webhook });
-      } catch (error) {
-        console.error("Telegram webhook configuration failed:", safeErrorMessage(error));
-        return Response.json(
-          { ok: false, error: "Telegram webhook configuration failed" },
-          { status: 502 }
-        );
-      }
-    }
-
-    if (url.pathname === "/index-sources") {
-      if (request.method !== "POST") return methodNotAllowed(["POST"]);
-      if (!(await isTelegramWebhookAuthorized(request, env))) {
-        return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-      }
-
-      try {
-        const { fetched, indexed, sources } = await indexContentSources(env);
-        return Response.json({ ok: true, fetched, indexed, sources });
-      } catch (error) {
-        console.error("Content source indexing failed:", safeErrorMessage(error));
-        return Response.json({ ok: false, error: "Content source indexing failed" }, { status: 502 });
-      }
-    }
-
-    if (url.pathname === "/reprocess-content") {
-      if (request.method !== "POST") return methodNotAllowed(["POST"]);
-      if (!(await isTelegramWebhookAuthorized(request, env))) {
-        return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-      }
-
-      try {
-        const limit = clampNumber(Number(url.searchParams.get("limit") || 3), 1, 5);
-        const result = await run(env, { silent: true, limit });
-        return Response.json({
-          ok: true,
-          checked: result.checked,
-          fresh: result.fresh,
-          processed: result.processed,
-          publishable: result.savedOnlyItems.filter((item) => !item.usedFallback && item.qualityScore >= MIN_PUBLISH_QUALITY).length,
-          fallback: result.savedOnlyItems.filter((item) => item.usedFallback).length,
-          failed: result.failed,
-        });
-      } catch (error) {
-        console.error("Content reprocessing failed:", safeErrorMessage(error));
-        return Response.json({ ok: false, error: "Content reprocessing failed" }, { status: 502 });
-      }
-    }
-
-    if (url.pathname === "/telegram-webhook-info") {
-      if (request.method !== "GET") return methodNotAllowed(["GET"]);
-      if (!(await isTelegramWebhookAuthorized(request, env))) {
-        return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-      }
-
-      try {
-        return Response.json({ ok: true, webhook: await getTelegramWebhookInfo(env) });
-      } catch (error) {
-        console.error("Telegram webhook inspection failed:", safeErrorMessage(error));
-        return Response.json(
-          { ok: false, error: "Telegram webhook inspection failed" },
-          { status: 502 }
-        );
-      }
-    }
-
-    if (url.pathname === "/telegram-webhook") {
-      if (request.method !== "POST") {
-        return methodNotAllowed(["POST"]);
-      }
-
-      if (!(await isTelegramWebhookAuthorized(request, env))) {
-        return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-      }
-
-      const contentType = request.headers.get("content-type") || "";
-      if (!contentType.toLowerCase().startsWith("application/json")) {
-        return Response.json({ ok: false, error: "Unsupported Media Type" }, { status: 415 });
-      }
-
-      try {
-        const contentLength = Number(request.headers.get("content-length") || 0);
-        if (contentLength > MAX_WEBHOOK_BODY_BYTES) {
-          return Response.json({ ok: false, error: "Payload Too Large" }, { status: 413 });
-        }
-
-        const rawBody = await request.text();
-        if (new TextEncoder().encode(rawBody).byteLength > MAX_WEBHOOK_BODY_BYTES) {
-          return Response.json({ ok: false, error: "Payload Too Large" }, { status: 413 });
-        }
-
-        const update = JSON.parse(rawBody);
-
-        ctx.waitUntil(handleTelegramWebhookOnce(update, env));
-
-        return Response.json({ ok: true });
-      } catch (error) {
-        console.error("Telegram webhook rejected:", safeErrorMessage(error));
-        return Response.json(
-          { ok: false, error: "Invalid webhook payload" },
-          { status: 400 }
-        );
-      }
-    }
-
-    if (url.pathname === "/test-ai") {
-      if (request.method !== "POST") return methodNotAllowed(["POST"]);
-      if (!(await isAdminAuthorized(request, env))) {
-        return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-      }
-
-      try {
-        const testItem = {
-          source: "Shopify Developer Changelog",
-          title: "Automatic CSS subsetting for {% stylesheet %} tags",
-          url: "https://shopify.dev/changelog",
-          summary:
-            "Shopify is introducing CSS content subsetting for stylesheet tags to improve storefront performance.",
-          publishedAt: new Date().toISOString(),
-          tags: ["themes", "liquid", "sections", "performance"],
-        };
-
-        const rawAiSummary = await summarizeWithAi(testItem, env);
-        const structuredSummary = parseAiStructured(rawAiSummary, testItem);
-        const useful = isStructuredSummaryUseful(structuredSummary);
-        const enrichedItem = buildEnrichedItem(testItem, structuredSummary, {
-          rawAiSummary,
-          usedFallback: !useful,
-          fallbackReason: useful ? null : "AI returned incomplete or generic structured response",
-        });
-
-        return Response.json({
-          ok: true,
-          aiWorking: true,
-          useful,
-          qualityScore: enrichedItem.qualityScore,
-          rawAiSummary,
-          structuredSummary: enrichedItem,
-        });
-      } catch (error) {
-        return Response.json(
-          {
-            ok: false,
-            aiWorking: false,
-            error: safeErrorMessage(error),
-          },
-          { status: 500 }
-        );
-      }
-    }
-
-    if (url.pathname === "/debug-env") {
-      if (request.method !== "GET") return methodNotAllowed(["GET"]);
-      if (!(await isAdminAuthorized(request, env))) {
-        return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-      }
-
-      const subscribers = await getSubscribers(env);
-      const latest = await getLatestItems(env);
-      const digest = await getDigestItems(env);
-      const lastRun = await getLastRun(env);
-      const stats = buildStats(latest, digest, subscribers, lastRun);
-
-      return Response.json({
-        ok: true,
-        service: `${SERVICE_NAME} ${SERVICE_VERSION}`,
-        hasKv: Boolean(env.SHOPIFY_RADAR_KV),
-        hasTelegramToken: Boolean(env.TELEGRAM_BOT_TOKEN),
-        hasLegacyTelegramChatId: Boolean(env.TELEGRAM_CHAT_ID),
-        hasAdminTelegramChatId: Boolean(env.ADMIN_TELEGRAM_CHAT_ID),
-        subscribersCount: subscribers.length,
-        latestCount: latest.length,
-        digestCount: digest.length,
-        latestNeedsBootstrap: latestNeedsBootstrap(latest, { includeStaleCheck: true }),
-        latestStructuredCount: latest.filter(hasStructuredFields).length,
-        latestAverageQuality: stats.latestAverageQuality,
-        fallbackCount: stats.latestFallbackCount,
-        lastRun,
-        latestTop: latest.slice(0, 3).map((item) => ({
-          title: item.title,
-          uaTitle: item.uaTitle,
-          publishedAt: item.publishedAt,
-          priority: item.priority,
-          relevance: item.relevance,
-          area: item.area,
-          devTags: item.devTags,
-          impactTags: item.impactTags,
-          qualityScore: item.qualityScore,
-          hasStructuredFields: hasStructuredFields(item),
-          usedFallback: Boolean(item.usedFallback),
-        })),
-        hasAiApiKey: Boolean(env.AI_API_KEY),
-        hasAiBaseUrl: Boolean(env.AI_BASE_URL),
-        aiBaseUrl: env.AI_BASE_URL || null,
-        hasAiModel: Boolean(env.AI_MODEL),
-        aiModel: env.AI_MODEL || null,
-        hasAdminSecret: Boolean(env.ADMIN_SECRET),
-      });
-    }
-
-    if (url.pathname === "/subscribers") {
-      if (request.method !== "GET") return methodNotAllowed(["GET"]);
-      if (!(await isAdminAuthorized(request, env))) {
-        return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-      }
-
-      const subscribers = await getSubscribers(env);
-
-      return Response.json({
-        ok: true,
-        count: subscribers.length,
-        subscribers,
-      });
-    }
-
-    if (url.pathname === "/run") {
-      if (request.method !== "POST") return methodNotAllowed(["POST"]);
-      const silent = url.searchParams.get("silent") === "1";
-      const ignoreSeen = url.searchParams.get("ignoreSeen") === "1";
-      const debug = url.searchParams.get("debug") === "1";
-      const limit = Number(url.searchParams.get("limit") || MAX_ITEMS_PER_RUN);
-
-      if (!(await isAdminAuthorized(request, env))) {
-        return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-      }
-
-      try {
-        const result = await run(env, { silent, limit, ignoreSeen, debug });
-        return Response.json({ ok: true, ...result });
-      } catch (error) {
-        return Response.json(
-          {
-            ok: false,
-            error: safeErrorMessage(error),
-          },
-          { status: 500 }
-        );
-      }
-    }
-
-    if (url.pathname === "/bootstrap") {
-      if (request.method !== "POST") return methodNotAllowed(["POST"]);
-      if (!(await isAdminAuthorized(request, env))) {
-        return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-      }
-
-      try {
-        const result = await bootstrapLatestNews(env);
-        return Response.json({
-          ok: true,
-          latestCount: result.latest.length,
-          processed: result.runResult.processed,
-          usedIgnoreSeen: true,
-          broadcast: false,
-          latest: result.latest.slice(0, INITIAL_BOOTSTRAP_LIMIT),
-        });
-      } catch (error) {
-        return Response.json(
-          {
-            ok: false,
-            error: safeErrorMessage(error),
-          },
-          { status: 500 }
-        );
-      }
-    }
-
-    if (url.pathname === "/send-digest") {
-      if (request.method !== "POST") return methodNotAllowed(["POST"]);
-      if (!(await isAdminAuthorized(request, env))) {
-        return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-      }
-
-      const result = await sendDailyDigest(env, { force: true });
-      return Response.json({ ok: true, ...result });
-    }
-
-    if (url.pathname === "/audit") {
-      if (request.method !== "GET") return methodNotAllowed(["GET"]);
-      if (!(await isAdminAuthorized(request, env))) {
-        return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-      }
-
-      await ensureInitialNews(env);
-      const latest = await getLatestItems(env);
-
-      return Response.json({
-        ok: true,
-        audit: buildAuditData(latest.slice(0, 20)),
-      });
-    }
-
-    return Response.json({
-      ok: true,
-      service: `${SERVICE_NAME} ${SERVICE_VERSION}`,
-      routes: [
-        "/health",
-        "/configure-telegram-webhook",
-        "/telegram-webhook-info",
-        "/telegram-webhook",
-        "/debug-env",
-        "/test-ai",
-        "/subscribers",
-        "/run",
-        "/run?silent=1&limit=10",
-        "/run?silent=1&limit=10&ignoreSeen=1",
-        "/run?silent=1&limit=10&ignoreSeen=1&debug=1",
-        "/bootstrap",
-        "/send-digest",
-        "/audit",
-      ],
-      adminAuth: "Authorization: Bearer <ADMIN_SECRET>",
-    });
+    return httpRouter(request, env, ctx);
   },
 };
+
+async function handleLegacyFetch() {
+  return handleUnknownRoute();
+}
+
+function handleUnknownRoute() {
+  return Response.json({
+    ok: true,
+    service: `${SERVICE_NAME} ${SERVICE_VERSION}`,
+    routes: HTTP_ROUTE_SUMMARY,
+    adminAuth: "Authorization: Bearer <ADMIN_SECRET>",
+  });
+}
 
 async function configureTelegramWebhook(request, env) {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_WEBHOOK_SECRET) {
@@ -553,18 +288,12 @@ async function getTelegramWebhookInfo(env) {
 }
 
 async function handleScheduledRun(env) {
-  try {
-    await ensureTelegramProfileVersion(env);
-  } catch (error) {
-    console.error("Telegram profile sync failed:", safeErrorMessage(error));
-  }
-  await run(env);
-
-  const now = new Date();
-
-  if (now.getUTCHours() === DAILY_DIGEST_UTC_HOUR) {
-    await sendDailyDigest(env);
-  }
+  return createScheduledHandler({
+    ensureProfile: () => ensureTelegramProfileVersion(env),
+    run: () => run(env),
+    sendDigest: () => sendDailyDigest(env),
+    dailyDigestHour: DAILY_DIGEST_UTC_HOUR,
+  })();
 }
 
 async function ensureTelegramProfileVersion(env) {
@@ -4255,76 +3984,23 @@ async function sendTelegramMessage(message, env, options = {}) {
 }
 
 async function sendTelegramRaw(chatId, text, env, options = {}) {
-  const body = {
-    chat_id: chatId,
-    text,
-    parse_mode: "HTML",
-    disable_web_page_preview: options.disableWebPagePreview ?? true,
-  };
-
-  if (options.replyMarkup) {
-    body.reply_markup = options.replyMarkup;
-  }
-
-  const response = await fetch(
-    `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Telegram failed: ${response.status} ${errorText}`);
-  }
+  return getTelegramClient(env).sendMessage(chatId, text, options);
 }
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function getTelegramClient(env) {
+  return createTelegramClient(env, { safeErrorMessage });
+}
+
 async function editTelegramMessage(chatId, messageId, text, env, options = {}) {
-  const body = {
-    chat_id: chatId,
-    message_id: messageId,
-    text,
-    parse_mode: "HTML",
-    disable_web_page_preview: true,
-  };
-
-  if (options.replyMarkup) {
-    body.reply_markup = options.replyMarkup;
-  }
-
-  const response = await fetch(
-    `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Telegram edit failed: ${response.status} ${errorText}`);
-  }
+  return getTelegramClient(env).editMessageText(chatId, messageId, text, options);
 }
 
 async function answerCallbackQuery(callbackQueryId, env, text = "OK") {
-  if (!callbackQueryId) return;
-
-  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      callback_query_id: callbackQueryId,
-      text,
-      show_alert: false,
-    }),
-  });
+  return getTelegramClient(env).answerCallbackQuery(callbackQueryId, text);
 }
 
 
@@ -4448,6 +4124,11 @@ export const __test = {
   buildAdminInlineKeyboard,
   sortItemsByDateDesc,
   filterItemsWithinHours,
+  fetchContentSource,
+  fetchContentFeeds,
+  validateEnv,
+  latestNeedsBootstrap,
+  latestLooksStale,
 };
 
 function getAiClient(env) {

@@ -3,6 +3,11 @@ import assert from "node:assert/strict";
 import { createAiClient } from "../src/enrichment/ai-client.js";
 import { filterFreshFeedItems, filterItemsWithinHours, isHighSignalFeedItem } from "../src/ingest/feed-utils.js";
 import { createNewsRepository } from "../src/storage/news-repository.js";
+import { __test } from "../worker.js";
+import { createTelegramClient } from "../src/telegram/client.js";
+import { createScheduledHandler } from "../src/runtime/scheduled.js";
+import { createFetchRouter } from "../src/runtime/fetch-router.js";
+import { HTTP_ROUTES, createHttpRouteTable } from "../src/http/routes.js";
 
 class MemoryKv {
   constructor(entries = {}) {
@@ -205,4 +210,137 @@ test("feed filters reject future, stale, prerelease and routine patch noise", ()
 test("feed high-signal filter rejects records without required publication data", () => {
   assert.equal(isHighSignalFeedItem({ title: "No URL", publishedAt: "2026-11-17" }), false);
   assert.equal(isHighSignalFeedItem({ title: "No date", url: "https://example.test/item" }), false);
+});
+
+test("RSS source fetch normalizes valid items and rejects upstream errors", async () => {
+  const source = {
+    id: "test-source",
+    name: "Test Source",
+    feedUrl: "https://example.test/feed.xml",
+    format: "rss",
+    tags: ["frontend"],
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(
+    "<rss><channel><item><title>Release</title><link>https://example.test/release</link><description>Details</description><pubDate>Tue, 17 Nov 2026 10:00:00 GMT</pubDate><category>vue</category></item></channel></rss>",
+    { status: 200 },
+  );
+
+  try {
+    const items = await __test.fetchContentSource(source);
+    assert.equal(items[0].sourceId, "test-source");
+    assert.equal(items[0].title, "Release");
+    assert.equal(items[0].publishedAt, "2026-11-17T10:00:00.000Z");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  globalThis.fetch = async () => new Response("down", { status: 503 });
+  try {
+    await assert.rejects(__test.fetchContentSource(source), /Test Source failed: 503/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Atom source fetch selects alternate links and published dates", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(
+    "<feed><entry><title>Nuxt update</title><link rel=\"alternate\" href=\"https://example.test/nuxt\"/><summary>Details</summary><published>2026-11-17T09:00:00Z</published><category term=\"nuxt\"/></entry></feed>",
+    { status: 200 },
+  );
+  try {
+    const items = await __test.fetchContentSource({ id: "atom", name: "Atom", feedUrl: "https://example.test/atom", format: "atom", tags: [] });
+    assert.deepEqual(items[0], {
+      source: "Atom",
+      sourceId: "atom",
+      title: "Nuxt update",
+      url: "https://example.test/nuxt",
+      summary: "Details",
+      publishedAt: "2026-11-17T09:00:00.000Z",
+      tags: ["nuxt"],
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Telegram client sends, edits and acknowledges messages", async () => {
+  const calls = [];
+  const client = createTelegramClient({ TELEGRAM_BOT_TOKEN: "token" }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ url, body: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    },
+  });
+
+  await client.sendMessage("7", "hello", { replyMarkup: { inline_keyboard: [] } });
+  await client.editMessageText("7", 10, "updated");
+  await client.answerCallbackQuery("cb", "done");
+  await client.answerCallbackQuery("");
+
+  assert.equal(calls.length, 3);
+  assert.match(calls[0].url, /sendMessage$/);
+  assert.equal(calls[0].body.reply_markup.inline_keyboard.length, 0);
+  assert.match(calls[1].url, /editMessageText$/);
+  assert.match(calls[2].url, /answerCallbackQuery$/);
+});
+
+test("Telegram client exposes upstream send and edit failures", async () => {
+  const client = createTelegramClient({ TELEGRAM_BOT_TOKEN: "token" }, {
+    fetchImpl: async () => new Response("no", { status: 502 }),
+  });
+
+  await assert.rejects(client.sendMessage("7", "hello"), /Telegram failed: 502 no/);
+  await assert.rejects(client.editMessageText("7", 10, "updated"), /Telegram edit failed: 502 no/);
+});
+
+test("scheduled handler continues after profile sync failure and sends digest at configured UTC hour", async () => {
+  const calls = [];
+  const scheduled = createScheduledHandler({
+    ensureProfile: async () => { throw new Error("profile unavailable"); },
+    run: async () => calls.push("run"),
+    sendDigest: async () => calls.push("digest"),
+    dailyDigestHour: 6,
+    now: () => new Date("2026-11-17T06:15:00.000Z"),
+  });
+
+  await scheduled();
+  assert.deepEqual(calls, ["run", "digest"]);
+});
+
+test("scheduled handler skips digest outside the configured hour", async () => {
+  const calls = [];
+  await createScheduledHandler({
+    ensureProfile: async () => calls.push("profile"),
+    run: async () => calls.push("run"),
+    sendDigest: async () => calls.push("digest"),
+    dailyDigestHour: 6,
+    now: () => new Date("2026-11-17T07:15:00.000Z"),
+  })();
+  assert.deepEqual(calls, ["profile", "run"]);
+});
+
+test("HTTP router dispatches by path and method and rejects unsupported methods", async () => {
+  const calls = [];
+  const router = createFetchRouter({
+    routes: createHttpRouteTable({
+      "/health": async (_request, _env, _ctx, url) => {
+        calls.push(url.pathname);
+        return new Response("ok");
+      },
+    }),
+    fallback: async () => new Response("fallback", { status: 404 }),
+    methodNotAllowed: (methods) => new Response("method", { status: 405, headers: { Allow: methods.join(", ") } }),
+  });
+
+  const ok = await router(new Request("https://example.test/health"), {}, {});
+  const wrong = await router(new Request("https://example.test/health", { method: "POST" }), {}, {});
+  const missing = await router(new Request("https://example.test/missing"), {}, {});
+  assert.equal(ok.status, 200);
+  assert.equal(wrong.status, 405);
+  assert.equal(wrong.headers.get("allow"), "GET");
+  assert.equal(missing.status, 404);
+  assert.deepEqual(calls, ["/health"]);
+  assert.equal(HTTP_ROUTES.length, 13);
 });

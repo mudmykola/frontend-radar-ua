@@ -47,7 +47,13 @@ Telegram command menu показує лише ці основні користу
 
 ## Архітектура
 
-- `worker.js` — cron, RSS/Atom ingestion, Gemini pipeline, KV і Telegram handlers;
+- `worker.js` — runtime entrypoint для HTTP, cron і сумісного webhook flow; доменна логіка мігрує у bounded modules поетапно;
+- `src/config/sources.js` — каталог офіційних джерел і дозволених article hosts;
+- `src/ingest/feed-utils.js` — freshness, date-first sorting, high-signal filtering, ranking і source balancing;
+- `src/enrichment/ai-client.js` — Gemini-compatible client, retries, fallback models і rate-limit handling;
+- `src/storage/news-repository.js` — repository boundary для latest/digest KV records;
+- `src/telegram/keyboards.js` — persistent/contextual keyboards і topic menu;
+- `src/telegram/commands.js` — Telegram command profile;
 - `src/http-security.js` — admin/webhook authentication;
 - `scripts/register-telegram-webhook.mjs` — Telegram webhook registration;
 - `test/worker.test.js` — unit і regression tests;
@@ -55,6 +61,8 @@ Telegram command menu показує лише ці основні користу
 - `updates/` — Dev Log;
 - `BACKLOG.md` — локальний backlog;
 - `wrangler.jsonc` — Cloudflare configuration.
+
+Цільова pipeline-модель: Collector → Enrichment → Publication Index → Telegram Delivery. Поточний runtime вже має окремі ingest/AI/storage/Telegram boundaries і зберігає KV як адаптер. Cloudflare Queue та D1 не підключені автоматично: для них потрібні створені production resources і binding IDs; їх можна додати через ці boundaries без повторного переписування Worker.
 
 Production Worker історично має ім’я `shopify-radar-ua`. Це не перейменовується, щоб не ламати URL, webhook і KV; публічна назва продукту — `Frontend Intelligence Radar UA`.
 

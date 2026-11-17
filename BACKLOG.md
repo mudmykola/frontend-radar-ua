@@ -4,6 +4,21 @@
 
 ## Done
 
+### Architecture: Split Worker into bounded modules v15.1
+
+- Priority: Medium
+- Labels: `core`, `backend`, `Refactor`, `Improvement`, `DX`
+- Assignee: tovarinfobud
+- Status: Done
+- Scope:
+  - extract source configuration and ingest utility boundaries;
+  - extract AI client and fallback/retry boundary;
+  - extract KV news repository boundary;
+  - extract Telegram keyboards and command profile;
+  - document Queue/D1 adapter boundary without inventing Cloudflare resource IDs;
+  - preserve behavior with regression tests.
+- Completion: `worker.js` reduced from 4,797 to 4,476 lines; new modules live under `src/config`, `src/ingest`, `src/enrichment`, `src/storage` and `src/telegram`. `pnpm run check` and 40 tests pass. Queue/D1 resources remain intentionally unprovisioned.
+
 ### Telegram: Simplify bot navigation v15
 
 - Priority: High

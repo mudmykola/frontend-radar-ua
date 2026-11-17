@@ -49,16 +49,28 @@ Telegram command menu показує лише ці основні користу
 
 - `worker.js` — runtime entrypoint для HTTP, cron і сумісного webhook flow; доменна логіка мігрує у bounded modules поетапно;
 - `src/runtime/scheduled.js` — ізольована cron/profile/digest orchestration boundary;
+- `src/runtime/run-pipeline.js` — ingestion, enrichment, persistence та immediate-delivery pipeline;
 - `src/runtime/fetch-router.js` — централізований path/method dispatch з fallback;
 - `src/http/routes.js` — canonical HTTP route registry і allowed methods;
 - `src/http/handlers.js` — injected implementations for health, webhook, indexing, diagnostics and admin routes;
 - `src/config/sources.js` — каталог офіційних джерел і дозволених article hosts;
 - `src/ingest/feed-utils.js` — freshness, date-first sorting, high-signal filtering, ranking і source balancing;
+- `src/ingest/content-fetcher.js` — source fetch orchestration, timeout, response limits and deduplication;
+- `src/ingest/article-context.js` — approved-host article fetch, redirect validation and readable-text extraction;
 - `src/enrichment/ai-client.js` — Gemini-compatible client, retries, fallback models і rate-limit handling;
+- `src/enrichment/editor.js` — facts extraction and editorial summary execution boundary;
+- `src/enrichment/quality-gate.js` — immediate delivery and publishability rules;
+- `src/enrichment/fallback-content.js` — source-area-specific fallback actions and checklists;
+- `src/enrichment/evidence.js` — evidence extraction, contamination guards and source-aware tags;
+- `src/enrichment/item-builder.js` — normalized AI summary to persisted item mapping;
+- `src/enrichment/structured-parser.js` — full AI structured response parser, normalizer, quality check and fallback;
 - `src/storage/news-repository.js` — repository boundary для latest/digest KV records;
 - `src/telegram/keyboards.js` — persistent/contextual keyboards і topic menu;
 - `src/telegram/commands.js` — Telegram command profile;
 - `src/telegram/client.js` — Telegram transport для send/edit/callback API;
+- `src/telegram/formatters.js` — compact Telegram feed cards;
+- `src/telegram/handlers.js` — Telegram command and callback domain handlers;
+- `src/telegram/parsing.js` — command, button and index parsing;
 - `src/http-security.js` — admin/webhook authentication;
 - `scripts/register-telegram-webhook.mjs` — Telegram webhook registration;
 - `test/worker.test.js` — unit і regression tests;
@@ -126,7 +138,7 @@ Production Worker історично має ім’я `shopify-radar-ua`. Це �
 
 ## Test workflow
 
-- `pnpm test` — 65 regression and integration tests with serialized execution;
+- `pnpm test` — 88 regression and integration tests with serialized execution;
 - `pnpm run test:coverage` — Node test coverage report for Worker and bounded modules;
 - `pnpm run check` — syntax validation;
 - `pnpm exec wrangler deploy --dry-run` — deployment bundle and bindings validation.

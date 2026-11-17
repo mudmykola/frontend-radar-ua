@@ -19,6 +19,14 @@ import {
 import { buildTelegramCommandMenu } from "./src/telegram/commands.js";
 import { createNewsRepository } from "./src/storage/news-repository.js";
 import { createSubscriberRepository } from "./src/storage/subscriber-repository.js";
+import { createContentFetcher } from "./src/ingest/content-fetcher.js";
+import { createArticleContext } from "./src/ingest/article-context.js";
+import { createAiEditor } from "./src/enrichment/editor.js";
+import { createQualityGate } from "./src/enrichment/quality-gate.js";
+import { createEvidenceRules } from "./src/enrichment/evidence.js";
+import { createItemBuilder } from "./src/enrichment/item-builder.js";
+import { createStructuredParser } from "./src/enrichment/structured-parser.js";
+import { buildFallbackApplicationItems as buildFallbackApplicationItemsModule, buildFallbackChecklistItems as buildFallbackChecklistItemsModule } from "./src/enrichment/fallback-content.js";
 import { createAiClient } from "./src/enrichment/ai-client.js";
 import {
   TOPIC_MENU,
@@ -36,10 +44,14 @@ import { createTelegramClient } from "./src/telegram/client.js";
 import { createTelegramDelivery } from "./src/telegram/delivery.js";
 import { createTelegramWebhookProcessor } from "./src/telegram/webhook.js";
 import { createTelegramUpdateHandler } from "./src/telegram/update-handler.js";
+import { createTelegramFormatters } from "./src/telegram/formatters.js";
+import { createTelegramHandlers } from "./src/telegram/handlers.js";
+import { normalizeTelegramCommand, parseCommandArgs, parseOptionalIndex } from "./src/telegram/parsing.js";
 import { createScheduledHandler } from "./src/runtime/scheduled.js";
 import { createFetchRouter } from "./src/runtime/fetch-router.js";
 import { HTTP_ROUTES, createHttpRouteTable } from "./src/http/routes.js";
 import { createHttpHandlers } from "./src/http/handlers.js";
+import { createRunPipeline } from "./src/runtime/run-pipeline.js";
 
 const SERVICE_NAME = "Frontend Intelligence Radar UA";
 const SERVICE_VERSION = "v15.0";
@@ -306,247 +318,8 @@ async function ensureTelegramProfileVersion(env) {
   await env.SHOPIFY_RADAR_KV.put(TELEGRAM_PROFILE_VERSION_KEY, TELEGRAM_PROFILE_VERSION);
 }
 
-async function run(env, options = {}) {
-  validateEnv(env);
-
-  const silent = Boolean(options.silent);
-  const ignoreSeen = Boolean(options.ignoreSeen);
-  const debug = Boolean(options.debug);
-  const limit = clampNumber(options.limit || MAX_ITEMS_PER_RUN, 1, 30);
-  const { items: recentItems, fetched } = await indexContentSources(env);
-
-  const freshItems = [];
-
-  for (const item of recentItems) {
-    if (ignoreSeen) {
-      freshItems.push(item);
-      continue;
-    }
-
-    const id = await createItemId(item);
-    const seen = await env.SHOPIFY_RADAR_KV.get(`seen:${id}`);
-    const storedRaw = await env.SHOPIFY_RADAR_KV.get(`${LATEST_ITEM_KEY_PREFIX}${id}`);
-    let storedItem = null;
-
-    try {
-      storedItem = storedRaw ? JSON.parse(storedRaw) : null;
-    } catch {
-      storedItem = null;
-    }
-
-    if (!seen || shouldReenrichItem(storedItem)) {
-      const storedAt = new Date(storedItem?.savedAt || 0).getTime();
-      const isPendingBacklog = Boolean(
-        storedItem?.pendingEnrichment &&
-        Number.isFinite(storedAt) &&
-        Date.now() - storedAt > 5 * 60 * 1000
-      );
-      freshItems.push({ ...item, suppressBroadcast: isPendingBacklog });
-    }
-  }
-
-  const limitedItems = freshItems.slice(0, limit);
-
-  const sentItems = [];
-  const savedOnlyItems = [];
-  const failedItems = [];
-
-  for (const item of limitedItems) {
-    const id = await createItemId(item);
-
-    try {
-      const sourceItem = await enrichItemWithArticleContext(item);
-      let structuredSummary;
-      let usedFallback = false;
-      let fallbackReason = "";
-      let rawAiSummary = "";
-
-      try {
-        const factAnalysis = JSON.stringify({
-          verifiedFacts: extractEvidenceFacts(sourceItem),
-          evidencePriority: inferPriority(sourceItem),
-          source: sourceItem.source,
-        });
-        rawAiSummary = await summarizeWithAi(sourceItem, env, factAnalysis);
-        structuredSummary = parseAiStructured(rawAiSummary, sourceItem);
-
-        if (!isStructuredSummaryUseful(structuredSummary)) {
-          usedFallback = true;
-          fallbackReason = "AI returned incomplete or generic structured response";
-          structuredSummary = createFallbackStructuredSummary(sourceItem, fallbackReason);
-        }
-      } catch (error) {
-        usedFallback = true;
-        fallbackReason = String(error?.message || error);
-        structuredSummary = createFallbackStructuredSummary(sourceItem, fallbackReason);
-
-        console.error("AI summary failed, using structured fallback:", {
-          title: item.title,
-          url: item.url,
-          error: fallbackReason,
-        });
-      }
-
-      const enrichedItem = buildEnrichedItem(sourceItem, structuredSummary, {
-        itemId: id,
-        rawAiSummary,
-        usedFallback,
-        fallbackReason,
-      });
-      const shouldSendNow =
-        !silent &&
-        !ignoreSeen &&
-        !sourceItem.suppressBroadcast &&
-        isPublishableItem(enrichedItem) &&
-        shouldSendImmediate(enrichedItem);
-
-      await saveLatestItem(enrichedItem, env);
-      await saveDigestItem(enrichedItem, env);
-
-      const resultItem = buildRunResultItem(enrichedItem, {
-        silent,
-        ignoreSeen,
-        usedFallback,
-        fallbackReason,
-        rawAiSummary: debug ? rawAiSummary : "",
-      });
-
-      if (shouldSendNow) {
-        const message = formatTelegramMessage(enrichedItem);
-        const sendResult = await sendTelegramMessage(message, env, {
-          item: enrichedItem,
-          replyMarkup: buildItemInlineKeyboard(enrichedItem),
-        });
-
-        sentItems.push({
-          ...resultItem,
-          subscribers: sendResult?.subscribers || 0,
-          deliveredSubscribers: sendResult?.deliveredSubscribers || 0,
-          skippedSubscribers: sendResult?.skippedSubscribers || 0,
-          failedSubscribers: sendResult?.failed?.length || 0,
-        });
-      } else {
-        savedOnlyItems.push(resultItem);
-      }
-
-      await env.SHOPIFY_RADAR_KV.put(
-        `seen:${id}`,
-        JSON.stringify({
-          title: item.title,
-          uaTitle: enrichedItem.uaTitle,
-          url: item.url,
-          source: item.source,
-          publishedAt: item.publishedAt || null,
-          priority: enrichedItem.priority,
-          relevance: enrichedItem.relevance,
-          qualityScore: enrichedItem.qualityScore,
-          sentImmediately: shouldSendNow,
-          silent,
-          ignoreSeen,
-          usedFallback,
-          fallbackReason: fallbackReason || null,
-          seenAt: new Date().toISOString(),
-        }),
-        { expirationTtl: SEEN_TTL_SECONDS }
-      );
-    } catch (error) {
-      failedItems.push({
-        title: item.title,
-        url: item.url,
-        error: String(error?.message || error),
-      });
-
-      console.error("Failed to process item:", {
-        title: item.title,
-        url: item.url,
-        error: String(error?.message || error),
-      });
-    }
-  }
-
-  const runResult = {
-    checked: fetched,
-    recent: recentItems.length,
-    fresh: freshItems.length,
-    processed: limitedItems.length,
-    sent: sentItems.length,
-    savedOnly: savedOnlyItems.length,
-    failed: failedItems.length,
-    silent,
-    ignoreSeen,
-    debug,
-    limit,
-    sentItems,
-    savedOnlyItems,
-    failedItems,
-  };
-
-  await saveLastRun(env, runResult);
-
-  return runResult;
-}
-
-async function indexContentSources(env) {
-  validateEnv(env);
-  const allItems = await fetchContentFeeds();
-  const recentItems = rankFeedItems(
-    filterFreshFeedItems(filterItemsByLookback(allItems, LOOKBACK_DAYS)).filter(isHighSignalFeedItem)
-  );
-  const indexedItems = balanceItemsBySource(recentItems, MAX_INDEXED_ITEMS_PER_SOURCE).slice(0, LATEST_ITEMS_LIMIT);
-  await indexFreshFeedItems(indexedItems, env);
-  return {
-    items: recentItems,
-    fetched: allItems.length,
-    indexed: indexedItems.length,
-    sources: new Set(indexedItems.map((item) => item.sourceId)).size,
-  };
-}
-
-
-function buildRunResultItem(item, meta = {}) {
-  const result = {
-    title: item.title,
-    uaTitle: item.uaTitle,
-    url: item.url,
-    priority: item.priority,
-    relevance: item.relevance,
-    area: item.area,
-    qualityScore: item.qualityScore,
-    impactTags: item.impactTags || [],
-    usedFallback: Boolean(meta.usedFallback),
-    fallbackReason: meta.fallbackReason || null,
-    silent: Boolean(meta.silent),
-    ignoreSeen: Boolean(meta.ignoreSeen),
-  };
-
-  if (meta.rawAiSummary) {
-    result.rawAiPreview = meta.rawAiSummary.slice(0, 1200);
-  }
-
-  return result;
-}
-
-async function saveLastRun(env, runResult) {
-  const fallbackCount = [...(runResult.sentItems || []), ...(runResult.savedOnlyItems || [])].filter(
-    (item) => item.usedFallback
-  ).length;
-
-  await env.SHOPIFY_RADAR_KV.put(
-    RUN_LAST_KEY,
-    JSON.stringify({
-      time: new Date().toISOString(),
-      checked: runResult.checked,
-      recent: runResult.recent,
-      fresh: runResult.fresh,
-      processed: runResult.processed,
-      sent: runResult.sent,
-      savedOnly: runResult.savedOnly,
-      failed: runResult.failed,
-      fallbackCount,
-      silent: runResult.silent,
-      ignoreSeen: runResult.ignoreSeen,
-    })
-  );
+function run(env, options = {}) {
+  return getRunPipeline().run(env, options);
 }
 
 async function getLastRun(env) {
@@ -588,360 +361,11 @@ async function handleTelegramWebhook(update, env) {
 }
 
 async function handleTelegramMessage(update, env) {
-  if (update?.callback_query) {
-    await handleTelegramCallback(update.callback_query, env);
-    return;
-  }
-
-  const message = update?.message || update?.edited_message;
-
-  if (!message) return;
-
-  const chatId = message?.chat?.id;
-  const text = String(message?.text || "").trim();
-  const command = normalizeTelegramCommand(text);
-  const args = parseCommandArgs(text);
-
-  if (!chatId) return;
-
-  if (command === "/start") {
-    const subscriber = await saveSubscriber(chatId, message, env);
-    await sendWelcome(chatId, env, subscriber);
-    return;
-  }
-
-  if (command === "/stop") {
-    await removeSubscriber(chatId, env);
-    await sendTelegramRaw(chatId, formatStopMessage(), env, {
-      replyMarkup: buildRemoveKeyboard(),
-    });
-    return;
-  }
-
-  if (command === "/latest") {
-    await saveSubscriber(chatId, message, env);
-    await sendLatest(chatId, env);
-    return;
-  }
-
-  if (command === "/practice") {
-    await saveSubscriber(chatId, message, env);
-    await sendFilteredLatest(chatId, env, {
-      title: "🧰 ПРАКТИЧНІ ЗМІНИ",
-      emptyTitle: "🧰 Практичних змін поки немає",
-      predicate: (item) => Boolean(
-        (item.todayAction || item.clientTask) &&
-        ((item.applicationItems || []).length || (item.checklistItems || []).length)
-      ),
-    });
-    return;
-  }
-
-  if (command === "/topics") {
-    await saveSubscriber(chatId, message, env);
-    await sendTopics(chatId, env);
-    return;
-  }
-
-  if (command === "/full") {
-    await saveSubscriber(chatId, message, env);
-    await sendFullLatest(chatId, env, { singleIndex: parseOptionalIndex(args[0]) });
-    return;
-  }
-
-  if (command === "/card") {
-    await saveSubscriber(chatId, message, env);
-    await sendSingleCard(chatId, env, parseOptionalIndex(args[0]) || 1);
-    return;
-  }
-
-  if (command === "/p0") {
-    await saveSubscriber(chatId, message, env);
-    await sendFilteredLatest(chatId, env, {
-      title: "🚨 КРИТИЧНІ ЗМІНИ",
-      emptyTitle: "🚨 Критичних змін поки немає",
-      predicate: (item) => item.priority === "P0",
-    });
-    return;
-  }
-
-  if (command === "/themes") {
-    await saveSubscriber(chatId, message, env);
-    await sendFilteredLatest(chatId, env, {
-      title: "🎨 ТЕМИ, LIQUID І СЕКЦІЇ",
-      emptyTitle: "🎨 Новин по темах поки немає",
-      predicate: (item) => matchesDevTags(item, ["themes", "liquid", "sections", "online-store"]),
-    });
-    return;
-  }
-
-  if (command === "/performance") {
-    await saveSubscriber(chatId, message, env);
-    await sendFilteredLatest(chatId, env, {
-      title: "⚡ ШВИДКІСТЬ, SEO ТА ОПТИМІЗАЦІЯ",
-      emptyTitle: "⚡ Новин по швидкості та SEO поки немає",
-      predicate: (item) => matchesDevTags(item, ["performance", "seo", "css", "assets", "speed"]),
-    });
-    return;
-  }
-
-  if (TECH_COMMAND_FILTERS[command]) {
-    const filter = TECH_COMMAND_FILTERS[command];
-    await saveSubscriber(chatId, message, env);
-    await sendFilteredLatest(chatId, env, {
-      title: filter.title,
-      emptyTitle: filter.emptyTitle,
-      predicate: (item) => matchesDevTags(item, filter.tags),
-    });
-    return;
-  }
-
-  if (command === "/digest") {
-    await saveSubscriber(chatId, message, env);
-    await sendDigestToChat(chatId, env);
-    return;
-  }
-
-  if (command === "/audit") {
-    await saveSubscriber(chatId, message, env);
-    await sendAuditChecklist(chatId, env);
-    return;
-  }
-
-  if (command === "/settings") {
-    const subscriber = await saveSubscriber(chatId, message, env);
-    await sendSettings(chatId, env, subscriber);
-    return;
-  }
-
-  if (command === "/stats") {
-    await saveSubscriber(chatId, message, env);
-    await sendStats(chatId, env);
-    return;
-  }
-
-  if (command === "/refresh") {
-    await saveSubscriber(chatId, message, env);
-    await sendRefresh(chatId, env);
-    return;
-  }
-
-  if (command === "/test_ai" || command === "/testai" || command === "/test-ai") {
-    await saveSubscriber(chatId, message, env);
-    await sendAiTest(chatId, env);
-    return;
-  }
-
-  if (command === "/help") {
-    await saveSubscriber(chatId, message, env);
-    await sendHelp(chatId, env);
-    return;
-  }
-
-  await sendUnknownCommand(chatId, env);
+  return getTelegramHandlers().handleMessage(update, env);
 }
 
 async function handleTelegramCallback(callbackQuery, env) {
-  const chatId = callbackQuery?.message?.chat?.id;
-  const messageId = callbackQuery?.message?.message_id;
-  const data = String(callbackQuery?.data || "");
-
-  if (!chatId) return;
-
-  try {
-    if (data.startsWith("article:")) {
-      const [, itemReference, displayIndex, displayTotal] = data.split(":");
-      await answerCallbackQuery(callbackQuery.id, env, "Відкриваю обрану статтю...");
-      await sendSingleCardByReference(chatId, env, itemReference, {
-        index: parseOptionalIndex(displayIndex),
-        total: parseOptionalIndex(displayTotal),
-      });
-      return;
-    }
-
-    if (data.startsWith("card:")) {
-      const index = Number(data.split(":")[1]);
-      await answerCallbackQuery(callbackQuery.id, env, "Відкриваю розбір...");
-      await sendSingleCard(chatId, env, Number.isFinite(index) ? index + 1 : 1);
-      return;
-    }
-
-    if (data === "latest") {
-      await answerCallbackQuery(callbackQuery.id, env, "Останні новини");
-      await sendLatest(chatId, env);
-      return;
-    }
-
-    if (data === "topics") {
-      await answerCallbackQuery(callbackQuery.id, env, "Обирай тему");
-      await sendTopics(chatId, env);
-      return;
-    }
-
-    if (data.startsWith("topic:")) {
-      const topic = data.slice("topic:".length);
-      const topicConfig = TOPIC_MENU.find((item) => item.id === topic);
-      if (!topicConfig) {
-        await answerCallbackQuery(callbackQuery.id, env, "Тему не знайдено");
-        return;
-      }
-
-      await answerCallbackQuery(callbackQuery.id, env, `Тема: ${topicConfig.label}`);
-      await sendFilteredLatest(chatId, env, {
-        title: topicConfig.title,
-        emptyTitle: topicConfig.emptyTitle,
-        predicate: (item) => matchesDevTags(item, topicConfig.tags),
-      });
-      return;
-    }
-
-    if (data === "full") {
-      await answerCallbackQuery(callbackQuery.id, env, "Повні розбори");
-      await sendFullLatest(chatId, env);
-      return;
-    }
-
-    if (data === "audit") {
-      await answerCallbackQuery(callbackQuery.id, env, "Готую audit checklist");
-      await sendAuditChecklist(chatId, env);
-      return;
-    }
-
-    if (data.startsWith("mode:")) {
-      const [, mode, itemReference] = data.split(":");
-      const latest = await getLatestItems(env);
-      const item = latest.find((candidate) =>
-        String(candidate.itemId || "").startsWith(String(itemReference || ""))
-      );
-
-      if (!item) {
-        await answerCallbackQuery(callbackQuery.id, env, "Новина вже змінилася у стрічці");
-        return;
-      }
-
-      await answerCallbackQuery(callbackQuery.id, env, "Готую потрібний формат");
-      await sendItemReadingMode(chatId, item, mode, env);
-      return;
-    }
-
-    if (data.startsWith("feedback:")) {
-      const [, reactionCode, itemReference] = data.split(":");
-      const reaction = { u: "useful", i: "interesting", n: "not-relevant", x: "not-understood" }[reactionCode];
-      const latest = await getLatestItems(env);
-      const item = latest.find((candidate) =>
-        String(candidate.itemId || "").startsWith(String(itemReference || ""))
-      );
-
-      if (!reaction || !item) {
-        await answerCallbackQuery(callbackQuery.id, env, "Новина вже змінилася у стрічці");
-        return;
-      }
-
-      await saveContentFeedback(chatId, item, reaction, env);
-      if (reaction === "not-understood") {
-        await answerCallbackQuery(callbackQuery.id, env, "Поясню простіше");
-        await sendItemReadingMode(chatId, item, "e", env);
-        return;
-      }
-      const responseText =
-        reaction === "useful"
-          ? "Врахую: більше практично корисних матеріалів"
-          : reaction === "interesting"
-            ? "Врахую: більше таких цікавих тем"
-            : "Врахую: менше подібних новин";
-      await answerCallbackQuery(callbackQuery.id, env, responseText);
-      return;
-    }
-
-    if (data.startsWith("settings:")) {
-      const subscriber = await updateSubscriberSettingsFromCallback(chatId, data, env);
-      await answerCallbackQuery(callbackQuery.id, env, "Налаштування оновлено");
-      await sendSettings(chatId, env, subscriber, { replaceMessageId: messageId });
-      return;
-    }
-
-    await answerCallbackQuery(callbackQuery.id, env, "Команду не розпізнано");
-  } catch (error) {
-    console.error("Telegram callback failed:", {
-      chatId,
-      data,
-      error: String(error?.message || error),
-    });
-
-    await answerCallbackQuery(callbackQuery.id, env, "Помилка виконання");
-  }
-}
-
-function normalizeTelegramCommand(text) {
-  const value = String(text || "").trim();
-  const mapped = mapButtonTextToCommand(value);
-
-  if (mapped) return mapped;
-
-  const first = value.split(/\s+/)[0] || "";
-  const withoutBotName = first.split("@")[0];
-
-  return withoutBotName.toLowerCase();
-}
-
-function mapButtonTextToCommand(text) {
-  const value = String(text || "").trim().toLowerCase();
-
-  const dictionary = {
-    Vue: "Vue",
-    Nuxt: "Nuxt",
-    Pinia: "Pinia",
-    Vite: "Vite",
-    JavaScript: "JavaScript",
-    TypeScript: "TypeScript",
-    CSS: "CSS / SCSS",
-    Tailwind: "Tailwind CSS",
-    UI: "UI / Accessibility",
-    "Node.js": "Node.js",
-    Cloudflare: "Cloudflare",
-    Shopify: "Shopify",
-    "🆕 останні": "/latest",
-    "🆕 свіже": "/latest",
-    "🎯 для мене": "/latest",
-    "🧰 практика": "/practice",
-    "🗂 теми": "/topics",
-    "📖 повні розбори": "/full",
-    "🚨 критичні": "/p0",
-    "🎨 themes": "/themes",
-    "🎨 теми": "/themes",
-    "⚡ performance": "/performance",
-    "⚡ швидкість": "/performance",
-    "💚 vue": "/vue",
-    "🟢 nuxt": "/nuxt",
-    "⚡ js/ts": "/js",
-    "🎨 css/ui": "/css",
-    "☁️ cloudflare": "/cloudflare",
-    "🛍 shopify": "/shopify",
-    "🧠 digest": "/digest",
-    "🧠 зведення": "/digest",
-    "✅ audit": "/audit",
-    "✅ аудит": "/audit",
-    "⚙️ settings": "/settings",
-    "⚙️ налаштування": "/settings",
-    "ℹ️ допомога": "/help",
-    "📊 stats": "/stats",
-  };
-
-  return dictionary[value] || "";
-}
-
-function parseCommandArgs(text) {
-  return String(text || "")
-    .trim()
-    .split(/\s+/)
-    .slice(1)
-    .filter(Boolean);
-}
-
-function parseOptionalIndex(value) {
-  const index = Number(value);
-  if (!Number.isFinite(index)) return null;
-  return Math.max(1, Math.floor(index));
+  return getTelegramHandlers().handleCallback(callbackQuery, env);
 }
 
 async function ensureInitialNews(env, options = {}) {
@@ -1302,34 +726,23 @@ async function sendItemsList(chatId, env, title, items) {
   );
 }
 
-function formatCompactItems(items) {
-  if (!items.length) {
-    return "🧊 Немає новин для показу.";
-  }
-
-  return items
-    .map((rawItem, index) => {
-      const item = normalizeStoredStructuredItem(rawItem);
-      const priority = item.priority || "P2";
-      const badge = getPriorityBadge(priority);
-      const label = getPriorityLabel(priority);
-      const area = translateArea(item.area || "Shopify Dev");
-      const date = item.publishedAt ? `🗓 ${escapeHtml(item.publishedAt.slice(0, 10))}` : "";
-      const audience = cleanStructuredText(item.audience || inferAudience(area));
-
-      return [
-        `${index + 1}. ${badge} <b>${escapeHtml(getItemTitle(item))}</b>`,
-        `${date} · <code>${escapeHtml(area)}</code> · ${escapeHtml(label)}`,
-        `Факт: ${escapeHtml(item.essence || item.aiConclusion)}`,
-        `Кому: ${escapeHtml(audience)}`,
-        `Дія: ${escapeHtml(item.todayAction || item.clientTask)}`,
-        `👉 /full ${index + 1}`,
-      ]
-        .filter(Boolean)
-        .join("\n");
-    })
-    .join("\n\n");
+function getTelegramFormatters() {
+  return createTelegramFormatters({
+    normalizeStoredStructuredItem,
+    getPriorityBadge,
+    getPriorityLabel,
+    translateArea,
+    escapeHtml,
+    cleanStructuredText,
+    inferAudience,
+  });
 }
+
+function formatCompactItems(items) {
+  return getTelegramFormatters().formatCompactItems(items);
+}
+
+
 
 async function sendFullLatest(chatId, env, options = {}) {
   await ensureLatestFeedSync(env);
@@ -1972,57 +1385,30 @@ function formatAuditMessage(groups) {
   ].join("\n");
 }
 
-async function fetchContentFeeds() {
-  const results = await Promise.allSettled(CONTENT_SOURCES.map(fetchContentSource));
-  const items = [];
-
-  results.forEach((result, index) => {
-    if (result.status === "fulfilled") {
-      items.push(...result.value);
-      return;
-    }
-
-    console.warn("Content source unavailable:", {
-      source: CONTENT_SOURCES[index].id,
-      error: safeErrorMessage(result.reason),
-    });
+function getContentFetcher() {
+  return createContentFetcher({
+    sources: CONTENT_SOURCES,
+    timeoutMs: FEED_FETCH_TIMEOUT_MS,
+    maxFeedBytes: MAX_FEED_BYTES,
+    maxItemsPerSource: MAX_ITEMS_PER_SOURCE,
+    readResponseTextLimited,
+    parseRssFeed,
+    parseAtomFeed,
+    normalizeReleaseIdentity,
+    rankFeedItems,
+    safeErrorMessage,
   });
+}
 
-  if (!items.length) throw new Error("All frontend content sources failed");
-
-  const deduplicated = new Map();
-  for (const item of items) {
-    const key = normalizeReleaseIdentity(item);
-    const current = deduplicated.get(key);
-    if (!current || new Date(item.publishedAt || 0) > new Date(current.publishedAt || 0)) {
-      deduplicated.set(key, item);
-    }
-  }
-
-  return rankFeedItems([...deduplicated.values()]);
+async function fetchContentFeeds() {
+  return getContentFetcher().fetchContentFeeds();
 }
 
 async function fetchContentSource(source) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FEED_FETCH_TIMEOUT_MS);
-
-  try {
-    const response = await fetch(source.feedUrl, {
-      headers: {
-        "User-Agent": `${SERVICE_NAME.replace(/\s+/g, "")}/${SERVICE_VERSION}`,
-        Accept: "application/atom+xml, application/rss+xml, application/xml, text/xml",
-      },
-      signal: controller.signal,
-    });
-
-    if (!response.ok) throw new Error(`${source.name} failed: ${response.status}`);
-    const xml = await readResponseTextLimited(response, MAX_FEED_BYTES);
-    const parsed = source.format === "atom" ? parseAtomFeed(xml, source) : parseRssFeed(xml, source);
-    return parsed.slice(0, MAX_ITEMS_PER_SOURCE);
-  } finally {
-    clearTimeout(timeout);
-  }
+  return getContentFetcher().fetchContentSource(source);
 }
+
+
 
 function parseRssFeed(xml, source) {
   const rawItems = String(xml || "").match(/<item\b[\s\S]*?<\/item>/gi) || [];
@@ -2109,81 +1495,30 @@ async function readResponseTextLimited(response, maxBytes) {
   return output;
 }
 
+function getArticleContext() {
+  return createArticleContext({
+    approvedHosts: APPROVED_ARTICLE_HOSTS,
+    timeoutMs: ARTICLE_FETCH_TIMEOUT_MS,
+    maxChars: ARTICLE_CONTEXT_MAX_CHARS,
+    readResponseTextLimited,
+    cleanHtml,
+    safeIsoDate,
+  });
+}
+
 async function enrichItemWithArticleContext(item) {
-  try {
-    const articleContext = await fetchArticleContext(item.url);
-    return { ...item, articleContext, contextSource: articleContext ? "full-article" : "rss" };
-  } catch (error) {
-    console.warn("Full changelog context unavailable:", {
-      url: item.url,
-      error: safeErrorMessage(error),
-    });
-    return { ...item, articleContext: "", contextSource: "rss" };
-  }
+  return getArticleContext().enrichItemWithArticleContext(item);
 }
 
 async function fetchArticleContext(value) {
-  const url = new URL(value);
-  if (url.protocol !== "https:" || !APPROVED_ARTICLE_HOSTS.has(url.hostname)) {
-    throw new Error("Unsupported changelog source");
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), ARTICLE_FETCH_TIMEOUT_MS);
-
-  try {
-    let currentUrl = url;
-    let response;
-
-    for (let redirectCount = 0; redirectCount <= 3; redirectCount += 1) {
-      response = await fetch(currentUrl, {
-        headers: {
-          "User-Agent": `${SERVICE_NAME.replace(/\s+/g, "")}/${SERVICE_VERSION}`,
-          Accept: "text/html,application/xhtml+xml",
-        },
-        redirect: "manual",
-        signal: controller.signal,
-      });
-
-      if (response.status < 300 || response.status >= 400) break;
-
-      const location = response.headers.get("location");
-      if (!location || redirectCount === 3) throw new Error("Invalid changelog redirect");
-      const nextUrl = new URL(location, currentUrl);
-      if (nextUrl.protocol !== "https:" || !APPROVED_ARTICLE_HOSTS.has(nextUrl.hostname)) {
-        throw new Error("Unsafe changelog redirect");
-      }
-      currentUrl = nextUrl;
-    }
-
-    if (!response.ok) throw new Error(`Changelog article failed with status ${response.status}`);
-
-    const html = await response.text();
-    return extractReadableArticleText(html).slice(0, ARTICLE_CONTEXT_MAX_CHARS);
-  } finally {
-    clearTimeout(timeout);
-  }
+  return getArticleContext().fetchArticleContext(value);
 }
 
 function extractReadableArticleText(html) {
-  const raw = String(html || "");
-  const mainMatch = raw.match(/<(?:main|article)\b[^>]*>([\s\S]*?)<\/(?:main|article)>/i);
-  const content = mainMatch?.[1] || raw;
-
-  return cleanText(
-    content
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
-      .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, " ")
-      .replace(/<header\b[^>]*>[\s\S]*?<\/header>/gi, " ")
-      .replace(/<nav\b[^>]*>[\s\S]*?<\/nav>/gi, " ")
-      .replace(/<footer\b[^>]*>[\s\S]*?<\/footer>/gi, " ")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/You signed (?:in|out) in another tab or window\.?/gi, " ")
-      .replace(/Reload to refresh your session\.?/gi, " ")
-      .replace(/Dismiss alert/gi, " ")
-  );
+  return getArticleContext().extractReadableArticleText(html);
 }
+
+
 
 
 
@@ -2234,7 +1569,7 @@ Full official article context:
 ${item.articleContext || "Full article unavailable; use RSS facts only."}
 `.trim();
 
-  return callAiText(env, {
+  return getAiEditor(env).extractFacts({
     temperature: 0,
     maxTokens: 900,
     system:
@@ -2371,7 +1706,7 @@ Full official article context:
 ${item.articleContext || "Full article unavailable. Do not invent missing details."}
 `.trim();
 
-  return requestAiCompletionWithFallback(env, {
+  return getAiEditor(env).summarize({
     model,
     temperature: 0.2,
     maxTokens: 1800,
@@ -2384,547 +1719,8 @@ ${item.articleContext || "Full article unavailable. Do not invent missing detail
 
 
 
-function parseAiStructured(text, item) {
-  const raw = String(text || "").trim();
-
-  const uaTitle = cleanStructuredText(extractMetaField(raw, "UA_TITLE"));
-  const priority = normalizePriority(extractMetaField(raw, "PRIORITY"));
-  const relevance = normalizeRelevance(extractMetaField(raw, "RELEVANCE"));
-  const area = cleanStructuredText(extractMetaField(raw, "AREA")).slice(0, 60) || inferArea(item);
-  const devTags = parseDevTags(extractMetaField(raw, "DEV_TAGS"));
-  const impactTags = parseDevTags(extractMetaField(raw, "IMPACT_TAGS"));
-  const clientTask = cleanStructuredText(extractMetaField(raw, "CLIENT_TASK"));
-  const benefit = normalizeScore(extractMetaField(raw, "BENEFIT"), 5);
-  const risk = normalizeScore(extractMetaField(raw, "RISK"), priority === "P0" ? 9 : 4);
-  const effort = normalizeScore(extractMetaField(raw, "EFFORT"), 5);
-  const confidence = normalizeScore(extractMetaField(raw, "CONFIDENCE"), 5);
-  const recommendation = cleanStructuredText(extractMetaField(raw, "RECOMMENDATION"));
-  const hiddenInsight = cleanStructuredText(extractMetaField(raw, "HIDDEN_INSIGHT"));
-  const notFor = cleanStructuredText(extractMetaField(raw, "NOT_FOR"));
-  const clientOpportunity = cleanStructuredText(extractMetaField(raw, "CLIENT_OPPORTUNITY"));
-  const urgency = cleanStructuredText(extractMetaField(raw, "URGENCY"));
-  const audience = cleanStructuredText(extractMetaField(raw, "AUDIENCE"));
-  const verifiedFacts = parseInlineList(extractMetaField(raw, "VERIFIED_FACTS"));
-  const aiConclusion = cleanStructuredText(extractMetaField(raw, "AI_CONCLUSION"));
-  const assumptions = parseInlineList(extractMetaField(raw, "ASSUMPTIONS"))
-    .filter((value) => !/^немає$/i.test(value));
-  const before = cleanStructuredText(extractMetaField(raw, "BEFORE"));
-  const after = cleanStructuredText(extractMetaField(raw, "AFTER"));
-  const expectedResult = cleanStructuredText(extractMetaField(raw, "EXPECTED_RESULT"));
-  const timeEstimate = cleanStructuredText(extractMetaField(raw, "TIME_ESTIMATE"));
-  const todayAction = cleanStructuredText(extractMetaField(raw, "TODAY_ACTION"));
-
-  const essence = extractSection(
-    raw,
-    ["🧠 Суть:", "🧠 Суть", "Суть:", "🧠"],
-    [
-      "🎯 Чому важливо:",
-      "🎯 Чому важливо",
-      "Чому важливо:",
-      "🎯",
-      "🛠 Як застосувати:",
-      "🛠 Як застосувати",
-      "Як застосувати:",
-      "🛠",
-      "✅ Що перевірити:",
-      "✅ Що перевірити",
-      "Що перевірити:",
-      "✅",
-      "💡 Ідея для розробника:",
-      "💡 Ідея:",
-      "💡",
-    ]
-  );
-
-  const importance = extractSection(
-    raw,
-    ["🎯 Чому важливо:", "🎯 Чому важливо", "Чому важливо:", "🎯"],
-    [
-      "🛠 Як застосувати:",
-      "🛠 Як застосувати",
-      "Як застосувати:",
-      "🛠",
-      "✅ Що перевірити:",
-      "✅ Що перевірити",
-      "Що перевірити:",
-      "✅",
-      "💡 Ідея для розробника:",
-      "💡 Ідея:",
-      "💡",
-    ]
-  );
-
-  const applicationText = extractSection(
-    raw,
-    ["🛠 Як застосувати:", "🛠 Як застосувати", "Як застосувати:", "🛠"],
-    [
-      "✅ Що перевірити:",
-      "✅ Що перевірити",
-      "Що перевірити:",
-      "✅",
-      "💡 Ідея для розробника:",
-      "💡 Ідея:",
-      "💡",
-    ]
-  );
-
-  const checklistText = extractSection(
-    raw,
-    ["✅ Що перевірити:", "✅ Що перевірити", "Що перевірити:", "✅"],
-    [
-      "💡 Ідея для розробника:",
-      "💡 Ідея:",
-      "💡 Ідея",
-      "Ідея для розробника:",
-      "Ідея:",
-      "💡",
-    ]
-  );
-
-  const devIdea = extractSection(
-    raw,
-    [
-      "💡 Ідея для розробника:",
-      "💡 Ідея для розробника",
-      "Ідея для розробника:",
-      "💡 Ідея:",
-      "💡 Ідея",
-      "Ідея:",
-      "💡",
-    ],
-    []
-  );
-
-  return normalizeStructuredSummary(
-    {
-      uaTitle,
-      priority,
-      relevance,
-      area,
-      devTags,
-      impactTags,
-      clientTask,
-      benefit,
-      risk,
-      effort,
-      confidence,
-      recommendation,
-      hiddenInsight,
-      notFor,
-      clientOpportunity,
-      urgency,
-      audience,
-      verifiedFacts,
-      aiConclusion,
-      assumptions,
-      before,
-      after,
-      expectedResult,
-      timeEstimate,
-      todayAction,
-      essence,
-      importance,
-      applicationItems: parseBulletItems(applicationText),
-      checklistItems: parseBulletItems(checklistText),
-      devIdea,
-    },
-    item
-  );
-}
-
-function normalizeStructuredSummary(summary, item) {
-  const fallbackTitle = createFallbackUaTitle(item);
-  const evidencePriority = inferPriority(item);
-  const requestedPriority = normalizePriority(summary.priority);
-  const priority = PRIORITY_RANK[requestedPriority] < PRIORITY_RANK[evidencePriority]
-    ? evidencePriority
-    : requestedPriority;
-  const area = cleanStructuredText(summary.area || inferArea(item)).slice(0, 60) || "Shopify Dev";
-  const relevance = normalizeRelevance(summary.relevance || inferRelevance(item, priority));
-  const inferredTags = inferDevTags(item, area);
-  const inferredImpactTags = inferImpactTags(item, priority, area);
-
-  const normalized = {
-    uaTitle: cleanStructuredText(summary.uaTitle || fallbackTitle).slice(0, 120) || fallbackTitle,
-    priority,
-    relevance,
-    area,
-    devTags: constrainDevTagsToSource(
-      normalizeTags([...(summary.devTags || []), ...inferredTags]),
-      item,
-      area
-    ).slice(0, 8),
-    impactTags: constrainImpactTagsToEvidence(
-      normalizeTags([...(summary.impactTags || []), ...inferredImpactTags]),
-      item
-    ).slice(0, 8),
-    clientTask: cleanStructuredText(summary.clientTask || buildClientTask({ ...item, priority, area })).slice(0, 500),
-    benefit: normalizeScore(summary.benefit, Math.max(3, relevance - 1)),
-    risk: Math.min(
-      normalizeScore(summary.risk, priority === "P0" ? 9 : priority === "P1" ? 6 : 3),
-      priority === "P0" ? 10 : priority === "P1" ? 7 : 4
-    ),
-    effort: normalizeScore(summary.effort, 5),
-    confidence: normalizeScore(summary.confidence, item.articleContext ? 8 : 5),
-    recommendation: inferRecommendation(priority, relevance),
-    hiddenInsight: cleanStructuredText(summary.hiddenInsight || "Перевір повний контекст джерела перед рішенням про впровадження.").slice(0, 500),
-    notFor: cleanStructuredText(summary.notFor || "Проєкти, яких не стосується зазначена Shopify-поверхня.").slice(0, 400),
-    clientOpportunity: cleanStructuredText(summary.clientOpportunity || summary.clientTask || buildClientTask({ ...item, priority, area })).slice(0, 500),
-    urgency: inferUrgency(priority, relevance),
-    audience: cleanStructuredText(summary.audience || inferAudience(area)).slice(0, 400),
-    verifiedFacts: sanitizeVerifiedFacts(summary.verifiedFacts || [item.summary]).slice(0, 4),
-    aiConclusion: cleanStructuredText(summary.aiConclusion || summary.importance || summary.essence).slice(0, 500),
-    assumptions: normalizeList(summary.assumptions || []).slice(0, 3),
-    before: cleanStructuredText(summary.before || "Не підтверджено в джерелі.").slice(0, 400),
-    after: cleanStructuredText(summary.after || summary.essence).slice(0, 400),
-    expectedResult: cleanStructuredText(summary.expectedResult || buildExpectedResult(area)).slice(0, 400),
-    timeEstimate: cleanStructuredText(summary.timeEstimate || "Потребує оцінки після перевірки проєкту.").slice(0, 160),
-    todayAction: cleanStructuredText(summary.todayAction || summary.clientTask || buildClientTask({ ...item, priority, area })).slice(0, 400),
-    essence: cleanStructuredText(summary.essence).slice(0, 500),
-    importance: cleanStructuredText(summary.importance).slice(0, 500),
-    applicationItems: normalizeList(summary.applicationItems).slice(0, 5),
-    checklistItems: normalizeList(summary.checklistItems).slice(0, 5),
-    devIdea: cleanStructuredText(summary.devIdea).slice(0, 500),
-  };
-
-  normalized.qualityScore = calculateQualityScore(normalized, { usedFallback: Boolean(summary.usedFallback) });
-
-  return normalized;
-}
-
-function isStructuredSummaryUseful(summary) {
-  if (!summary) return false;
-
-  const values = [summary.uaTitle, summary.essence, summary.importance, summary.devIdea, summary.clientTask]
-    .map((value) => String(value || "").trim())
-    .join("\n");
-
-  if (summary.uaTitle.length < 8) return false;
-  if (summary.essence.length < 15) return false;
-  if (summary.importance.length < 15) return false;
-  if (!Array.isArray(summary.applicationItems) || !summary.applicationItems.length) return false;
-  if (!Array.isArray(summary.checklistItems) || !summary.checklistItems.length) return false;
-  if (summary.devIdea.length < 10) return false;
-  if (!Array.isArray(summary.verifiedFacts) || summary.verifiedFacts.length < 2) return false;
-  if (String(summary.audience || "").length < 15) return false;
-  if (String(summary.aiConclusion || "").length < 20) return false;
-  if (String(summary.expectedResult || "").length < 15) return false;
-  if (String(summary.todayAction || "").length < 15) return false;
-  if (hasContaminatedContent(summary)) return false;
-
-  const genericPatterns = [
-    /Короткий опис відсутній/i,
-    /Відкрий джерело для деталей/i,
-    /Це нова Shopify-зміна, яку варто перевірити/i,
-    /Навіть без AI-розбору цю зміну варто оцінити/i,
-    /AI не повернув відповідь/i,
-    /No summary/i,
-    /перевірити інтеграції$/i,
-    /ознайомитися з документацією$/i,
-  ];
-
-  if (genericPatterns.some((pattern) => pattern.test(values))) return false;
-  if (looksMostlyEnglish(summary.uaTitle) && !hasCyrillic(summary.uaTitle)) return false;
-  if (looksMostlyEnglish(summary.essence) && summary.essence.length > 120) return false;
-  if (summary.essence.length > 650) return false;
-  if (Number(summary.qualityScore || 0) < MIN_PUBLISH_QUALITY) return false;
-
-  return true;
-}
-
-function createFallbackStructuredSummary(item, reason = "") {
-  const priority = inferPriority(item);
-  const area = inferArea(item);
-  const relevance = inferRelevance(item, priority);
-  const title = createFallbackUaTitle(item);
-  const tags = inferDevTags(item, area);
-  const impactTags = inferImpactTags(item, priority, area);
-  const verifiedFacts = extractEvidenceFacts(item);
-  const sourceName = cleanStructuredText(item.source || "Офіційне джерело");
-  const firstFact = verifiedFacts[0] || cleanStructuredText(item.summary || item.title);
-
-  return normalizeStructuredSummary(
-    {
-      uaTitle: title,
-      priority,
-      relevance,
-      area,
-      devTags: tags,
-      impactTags,
-      clientTask: buildClientTask({ ...item, priority, area }),
-      benefit: Math.max(3, relevance - 1),
-      risk: priority === "P0" ? 9 : priority === "P1" ? 6 : 3,
-      effort: 5,
-      confidence: item.articleContext ? 7 : 4,
-      recommendation: inferRecommendation(priority, relevance),
-      hiddenInsight: "Додаткові наслідки не підтверджені джерелом і потребують перевірки в конкретному проєкті.",
-      notFor: buildNotFor(area),
-      clientOpportunity: buildClientTask({ ...item, priority, area }),
-      verifiedFacts,
-      aiConclusion: `Без AI-інтерпретації: ${firstFact}`,
-      assumptions: [],
-      before: "Джерело не описує попередню поведінку.",
-      after: firstFact,
-      expectedResult: buildExpectedResult(area),
-      timeEstimate: "Потребує оцінки після перевірки застосовності.",
-      todayAction: buildClientTask({ ...item, priority, area }),
-      essence: `${sourceName}: ${firstFact}`,
-      importance: "Рівень впливу не встановлено без завершеного аналізу; не вважати production-ризиком автоматично.",
-      applicationItems: buildFallbackApplicationItems(item, area),
-      checklistItems: buildFallbackChecklistItems(item, area),
-      devIdea: `Перевір застосовність зміни до ${area} перед створенням задачі.`,
-      usedFallback: true,
-    },
-    item
-  );
-}
-
-function extractEvidenceFacts(item) {
-  const text = cleanStructuredText(item.articleContext || cleanHtml(item.summary || ""));
-  const facts = text
-    .split(/(?<=[.!?])\s+/)
-    .map((sentence) => cleanStructuredText(sentence).slice(0, 260))
-    .filter((sentence) => sentence.length >= 25)
-    .slice(0, 3);
-
-  if (facts.length < 2 && item.title) {
-    facts.push(`Офіційний заголовок: ${cleanStructuredText(item.title).slice(0, 180)}`);
-  }
-
-  return normalizeList(facts).slice(0, 3);
-}
-
-function buildNotFor(area) {
-  const value = String(area || "").toLowerCase();
-  if (/vue|pinia/.test(value)) return "Проєкти без Vue або Pinia.";
-  if (/nuxt/.test(value)) return "Проєкти без Nuxt, SSR або Nitro.";
-  if (/vite|typescript|javascript|node/.test(value)) return "Проєкти, що не використовують відповідний runtime або toolchain.";
-  if (/css|tailwind|ui/.test(value)) return "Проєкти без відповідного CSS/UI stack.";
-  if (/cloudflare/.test(value)) return "Команди, що не використовують згадану Cloudflare-функцію.";
-  if (/shopify|theme|liquid|api|checkout/.test(value)) return "Проєкти без відповідної Shopify-поверхні або інтеграції.";
-  return "Проєкти, що не використовують описану технологію або можливість.";
-}
-
-function constrainImpactTagsToEvidence(tags, item) {
-  const text = buildSearchText(item);
-  const allowed = new Set(tags || []);
-
-  if (!/security advisory|security release|vulnerab|\bcve-?\d*/i.test(text)) allowed.delete("security");
-  if (!/breaking change/i.test(text)) allowed.delete("breaking");
-  if (!/migration required|mandatory migration/i.test(text)) allowed.delete("migration");
-  if (!/deprecat|removal notice|sunset|no longer supported/i.test(text)) allowed.delete("deprecation");
-  if (item.sourceId !== "shopify" || !/theme|liquid|section|online store/i.test(text)) allowed.delete("theme-risk");
-  if (item.sourceId !== "shopify" || !/\bpos\b|point of sale/i.test(text)) allowed.delete("pos-risk");
-  if (item.sourceId !== "shopify" || !/checkout|payment|shipping|cart transform/i.test(text)) allowed.delete("checkout-risk");
-  if (!/performance|speed|latency|lcp|cls|core web vitals|bundle|asset/i.test(text)) allowed.delete("performance-opportunity");
-
-  return [...allowed];
-}
-
-function constrainDevTagsToSource(tags, item, area) {
-  const sourceId = String(item?.sourceId || "").toLowerCase();
-  const base = new Set(normalizeTags(item?.tags || []));
-  const families = {
-    shopify: ["shopify", "shopify-dev", "liquid", "themes", "sections", "admin-api", "storefront-api", "graphql", "checkout", "functions", "markets", "metafields", "webhooks", "app-dev", "pos", "hydrogen", "ui", "javascript", "typescript"],
-    vue: ["vue", "javascript", "typescript", "ui", "a11y", "reactivity"],
-    nuxt: ["nuxt", "vue", "ssr", "nitro", "javascript", "typescript", "performance"],
-    pinia: ["pinia", "vue", "state-management", "javascript", "typescript"],
-    vite: ["vite", "javascript", "typescript", "build-tools", "performance"],
-    tailwind: ["tailwind", "css", "ui", "a11y"],
-    typescript: ["typescript", "javascript", "build-tools"],
-    sass: ["sass", "scss", "css", "ui"],
-    node: ["node", "javascript", "typescript", "runtime", "performance", "security"],
-    mdn: ["javascript", "css", "web-platform", "ui", "a11y", "browser-api", "performance"],
-    cloudflare: ["cloudflare", "workers", "edge", "workerd", "durable-objects", "kv", "d1", "r2", "queues", "javascript", "typescript", "performance", "security"],
-  };
-  const allowed = new Set([...(families[sourceId] || []), ...base]);
-  const areaTag = normalizeTags([area])[0];
-  if (areaTag) allowed.add(areaTag);
-  return normalizeTags(tags).filter((tag) => allowed.has(tag));
-}
-
-function sanitizeVerifiedFacts(facts) {
-  return normalizeList(facts).filter((fact) => !isContaminatedText(fact));
-}
-
-function isContaminatedText(value) {
-  return /you signed (?:in|out)|reload to refresh|dismiss alert|skip to content|github navigation|cookie preferences|content loading/i.test(String(value || ""));
-}
-
-function hasContaminatedContent(summary) {
-  return [
-    summary?.uaTitle,
-    summary?.essence,
-    summary?.importance,
-    summary?.aiConclusion,
-    ...(summary?.verifiedFacts || []),
-  ].some(isContaminatedText);
-}
-
-function buildFallbackApplicationItems(item, area) {
-  const normalizedArea = String(area || "").toLowerCase();
-
-  if (/vue|pinia/.test(normalizedArea)) {
-    return ["Звірити заторкнуті Vue API та компоненти.", "Запустити unit/component tests для reactivity і stores.", "Перевірити migration notes перед оновленням залежності."];
-  }
-
-  if (/nuxt/.test(normalizedArea)) {
-    return ["Звірити Nuxt/Nitro версію і migration notes.", "Перевірити SSR, hydration та data fetching у production build.", "Запустити smoke tests server routes і ключових сторінок."];
-  }
-
-  if (/vite|typescript|javascript|node/.test(normalizedArea)) {
-    return ["Звірити версії runtime і build toolchain.", "Запустити typecheck, build та automated tests.", "Перевірити release notes на несумісні зміни конфігурації."];
-  }
-
-  if (/css|tailwind|ui/.test(normalizedArea)) {
-    return ["Звірити CSS/Tailwind pipeline і browser support.", "Запустити visual regression ключових компонентів.", "Перевірити responsive states та accessibility."];
-  }
-
-  if (/cloudflare/.test(normalizedArea)) {
-    return ["Звірити, чи використовується змінена Cloudflare-функція.", "Перевірити Worker bindings, compatibility date і local runtime.", "Запустити staging deploy та перевірити edge logs."];
-  }
-
-  if (/admin api|storefront api|api/.test(normalizedArea)) {
-    return [
-      "Перевірити GraphQL/Admin API запити, мутації, scopes і версію API в інтеграціях.",
-      "Оцінити, чи є вплив на автоматизації, webhooks, bulk operations або бекенд-скрипти.",
-      "Додати пункт у dev-аудит клієнтського магазину перед оновленням API-версії.",
-    ];
-  }
-
-  if (/themes|теми|liquid/.test(normalizedArea)) {
-    return [
-      "Перевірити theme code: Liquid, sections, snippets, app blocks і кастомні scripts.",
-      "Оцінити, чи можна використати зміну для покращення UX, CRO або підтримки теми.",
-      "Додати перевірку в чеклист перед релізом theme update.",
-    ];
-  }
-
-  if (/checkout/.test(normalizedArea)) {
-    return [
-      "Перевірити checkout customization, Functions, payment/shipping логіку і Shopify Plus сценарії.",
-      "Оцінити ризик для клієнтських checkout flow, Markets або payment integrations.",
-      "Додати тестовий сценарій у QA перед релізом змін.",
-    ];
-  }
-
-  if (/performance|швидкість|seo/.test(normalizedArea)) {
-    return [
-      "Перевірити вплив на швидкість, SEO, assets, app scripts або Core Web Vitals.",
-      "Додати зміну в технічний аудит сторінок PDP, collection і homepage.",
-      "Оцінити, чи можна використати це як покращення для клієнтського беклогу.",
-    ];
-  }
-
-  return [
-    "Визначити, які модулі або проєкти використовують змінену можливість.",
-    "Звірити точні умови й обмеження в офіційному джерелі.",
-    "Додати задачу лише після підтвердження практичного впливу.",
-  ];
-}
-
-function buildFallbackChecklistItems(item, area) {
-  const normalizedArea = String(area || "").toLowerCase();
-
-  if (/vue|pinia/.test(normalizedArea)) return ["Vue/Pinia version", "Заторкнуті components, composables і stores", "Unit та component regression"];
-  if (/nuxt/.test(normalizedArea)) return ["Nuxt/Nitro version", "SSR, hydration і data fetching", "Production build та server routes"];
-  if (/vite|typescript|javascript|node/.test(normalizedArea)) return ["Runtime і dependency versions", "Typecheck, build і tests", "Config та plugin compatibility"];
-  if (/css|tailwind|ui/.test(normalizedArea)) return ["CSS/Tailwind build", "Responsive visual regression", "Accessibility і browser support"];
-  if (/cloudflare/.test(normalizedArea)) return ["Worker/runtime applicability", "Bindings і compatibility date", "Staging deploy та edge logs"];
-
-  if (/admin api|storefront api|api/.test(normalizedArea)) {
-    return [
-      "API version і deprecated поля",
-      "GraphQL mutations/queries та scopes",
-      "Webhooks, integrations, scripts і automation jobs",
-    ];
-  }
-
-  if (/themes|теми|liquid/.test(normalizedArea)) {
-    return [
-      "Liquid templates, sections і snippets",
-      "Theme app extensions або app blocks",
-      "JS/CSS, UX states і regression на ключових сторінках",
-    ];
-  }
-
-  if (/checkout/.test(normalizedArea)) {
-    return [
-      "Checkout flow і Shopify Plus customizations",
-      "Functions, payment/shipping rules і Markets",
-      "QA сценарії для test order та edge cases",
-    ];
-  }
-
-  return [
-    "Точні факти офіційного джерела",
-    "Версії та модулі, яких стосується зміна",
-    "Підтверджені breaking, deprecation або migration notes",
-  ];
-}
-
-function buildEnrichedItem(item, structuredSummary, meta = {}) {
-  const normalized = normalizeStructuredSummary(
-    {
-      ...structuredSummary,
-      usedFallback: meta.usedFallback,
-    },
-    item
-  );
-
-  return {
-    ...item,
-    itemId: meta.itemId || item.itemId || "",
-    uaTitle: normalized.uaTitle,
-    priority: normalized.priority,
-    relevance: normalized.relevance,
-    area: normalized.area,
-    devTags: normalized.devTags,
-    impactTags: normalized.impactTags,
-    clientTask: normalized.clientTask,
-    benefit: normalized.benefit,
-    risk: normalized.risk,
-    effort: normalized.effort,
-    confidence: normalized.confidence,
-    recommendation: normalized.recommendation,
-    hiddenInsight: normalized.hiddenInsight,
-    notFor: normalized.notFor,
-    clientOpportunity: normalized.clientOpportunity,
-    urgency: normalized.urgency,
-    audience: normalized.audience,
-    verifiedFacts: normalized.verifiedFacts,
-    aiConclusion: normalized.aiConclusion,
-    assumptions: normalized.assumptions,
-    before: normalized.before,
-    after: normalized.after,
-    expectedResult: normalized.expectedResult,
-    timeEstimate: normalized.timeEstimate,
-    todayAction: normalized.todayAction,
-    qualityScore: normalized.qualityScore,
-    essence: normalized.essence,
-    importance: normalized.importance,
-    applicationItems: normalized.applicationItems,
-    checklistItems: normalized.checklistItems,
-    devIdea: normalized.devIdea,
-    usedFallback: Boolean(meta.usedFallback),
-    fallbackReason: meta.fallbackReason || null,
-    rawAiSummary: meta.rawAiSummary || null,
-    savedAt: new Date().toISOString(),
-  };
-}
-
 function shouldSendImmediate(item) {
-  if (item.priority === "P0") return true;
-  const relevance = Number(item.relevance || 0);
-  const benefit = normalizeScore(item.benefit, 5);
-  const risk = normalizeScore(item.risk, 4);
-  const confidence = normalizeScore(item.confidence, 5);
-
-  if (item.priority === "P1") {
-    return confidence >= 6 && ((relevance >= MIN_IMMEDIATE_RELEVANCE && benefit >= 6) || risk >= 7);
-  }
-
-  return relevance >= 9 && benefit >= 8 && confidence >= 7;
+  return getQualityGate().shouldSendImmediate(item);
 }
 
 function shouldDeliverToSubscriber(item, subscriber, options = {}) {
@@ -3029,15 +1825,7 @@ async function getDigestItems(env) {
 }
 
 function isPublishableItem(item) {
-  return Boolean(
-    item &&
-    !item.pendingEnrichment &&
-    !item.usedFallback &&
-    Number(item.qualityScore || 0) >= MIN_PUBLISH_QUALITY &&
-    Array.isArray(item.verifiedFacts) &&
-    item.verifiedFacts.length >= 2 &&
-    !hasContaminatedContent(item)
-  );
+  return getQualityGate().isPublishableItem(item);
 }
 
 async function readJsonArray(env, key) {
@@ -3507,93 +2295,6 @@ function buildSearchText(item) {
     .toLowerCase();
 }
 
-function extractMetaField(text, key) {
-  const regex = new RegExp(`^\\s*${escapeRegExp(key)}\\s*:\\s*(.+)$`, "im");
-  const match = String(text || "").match(regex);
-
-  return match ? cleanStructuredText(match[1]) : "";
-}
-
-function extractSection(text, startLabels, endLabels) {
-  const raw = String(text || "");
-  const lower = raw.toLowerCase();
-  let startIndex = -1;
-  let startLength = 0;
-
-  for (const label of startLabels) {
-    const index = lower.indexOf(label.toLowerCase());
-
-    if (index !== -1 && (startIndex === -1 || index < startIndex)) {
-      startIndex = index;
-      startLength = label.length;
-    }
-  }
-
-  if (startIndex === -1) return "";
-
-  const contentStart = startIndex + startLength;
-  let contentEnd = raw.length;
-
-  for (const label of endLabels) {
-    const index = lower.indexOf(label.toLowerCase(), contentStart);
-
-    if (index !== -1 && index < contentEnd) {
-      contentEnd = index;
-    }
-  }
-
-  return cleanStructuredText(
-    raw
-      .slice(contentStart, contentEnd)
-      .replace(/^[:\s]+/, "")
-      .replace(/^(Суть|Чому важливо|Як застосувати|Що перевірити|Ідея для розробника|Ідея)\s*:\s*/i, "")
-  );
-}
-
-function parseBulletItems(text) {
-  const raw = String(text || "");
-  const normalized = cleanStructuredText(raw);
-
-  if (!normalized) return [];
-
-  const sourceForLines = raw.includes("\n") ? raw : normalized;
-  const lines = sourceForLines
-    .split(/\n+/)
-    .map((line) => cleanStructuredText(line.replace(/^[-*•–—]\s*/, "")))
-    .filter(Boolean);
-
-  if (lines.length > 1) return normalizeList(lines);
-
-  if (normalized.includes("•")) {
-    return normalizeList(
-      normalized
-        .split("•")
-        .map((item) => cleanStructuredText(item))
-        .filter(Boolean)
-    );
-  }
-
-  return normalizeList([normalized]);
-}
-
-function parseDevTags(value) {
-  return normalizeTags(
-    String(value || "")
-      .split(",")
-      .map((tag) => tag.trim())
-      .filter(Boolean)
-  );
-}
-
-function parseInlineList(value) {
-  return normalizeList(
-    String(value || "")
-      .split(/\s*\|\s*/)
-      .map((item) => item.trim())
-      .filter(Boolean)
-  );
-}
-
 function normalizeList(items) {
   const source = Array.isArray(items) ? items : [items];
 
@@ -3977,6 +2678,171 @@ function getAiClient(env) {
     maxRetries: AI_MAX_RETRIES,
     retryBaseDelayMs: AI_RETRY_BASE_DELAY_MS,
   });
+}
+
+function getRunPipeline() {
+  return createRunPipeline({
+    maxItemsPerRun: MAX_ITEMS_PER_RUN,
+    latestItemKeyPrefix: LATEST_ITEM_KEY_PREFIX,
+    runLastKey: RUN_LAST_KEY,
+    seenTtlSeconds: SEEN_TTL_SECONDS,
+    latestItemsLimit: LATEST_ITEMS_LIMIT,
+    lookbackDays: LOOKBACK_DAYS,
+    maxIndexedItemsPerSource: MAX_INDEXED_ITEMS_PER_SOURCE,
+    validateEnv,
+    clampNumber,
+    createItemId,
+    shouldReenrichItem,
+    enrichItemWithArticleContext,
+    extractEvidenceFacts,
+    inferPriority,
+    summarizeWithAi,
+    parseAiStructured,
+    isStructuredSummaryUseful,
+    createFallbackStructuredSummary,
+    buildEnrichedItem,
+    isPublishableItem,
+    shouldSendImmediate,
+    saveLatestItem,
+    saveDigestItem,
+    formatTelegramMessage,
+    sendTelegramMessage,
+    buildItemInlineKeyboard,
+    safeErrorMessage,
+    rankFeedItems,
+    filterFreshFeedItems,
+    filterItemsByLookback,
+    isHighSignalFeedItem,
+    fetchContentFeeds,
+    balanceItemsBySource,
+    indexFreshFeedItems,
+  });
+}
+
+function getTelegramHandlers() {
+  return createTelegramHandlers({
+    normalizeCommand: normalizeTelegramCommand,
+    parseArgs: parseCommandArgs,
+    parseIndex: parseOptionalIndex,
+    topicMenu: TOPIC_MENU,
+    techFilters: TECH_COMMAND_FILTERS,
+    saveSubscriber,
+    removeSubscriber,
+    sendWelcome,
+    sendLatest,
+    sendFilteredLatest,
+    sendTopics,
+    sendFullLatest,
+    sendSingleCard,
+    sendSingleCardByReference,
+    sendTelegramRaw,
+    formatStopMessage,
+    removeKeyboard: buildRemoveKeyboard,
+    sendAuditChecklist,
+    sendSettings,
+    sendStats,
+    sendRefresh,
+    sendAiTest,
+    sendHelp,
+    sendUnknownCommand,
+    sendDigestToChat,
+    answerCallbackQuery,
+    getLatestItems,
+    sendItemReadingMode,
+    saveContentFeedback,
+    updateSubscriberSettings: updateSubscriberSettingsFromCallback,
+    matchesDevTags,
+  });
+}
+
+function indexContentSources(env) {
+  return getRunPipeline().indexContentSources(env);
+}
+
+function getAiEditor(env) {
+  const client = getAiClient(env);
+  return createAiEditor(env, {
+    callText: (request) => client.callText(request),
+    requestCompletionWithFallback: (request) => client.requestCompletionWithFallback(request),
+  });
+}
+
+function getQualityGate() {
+  return createQualityGate({
+    minPublishQuality: MIN_PUBLISH_QUALITY,
+    minImmediateRelevance: MIN_IMMEDIATE_RELEVANCE,
+    normalizeScore,
+    hasContaminatedContent,
+  });
+}
+
+function getEvidenceRules() {
+  return createEvidenceRules({ cleanStructuredText, cleanHtml, normalizeList, normalizeTags, buildSearchText });
+}
+
+function buildEnrichedItem(item, structuredSummary, meta = {}) {
+  return createItemBuilder({ normalizeStructuredSummary, now: () => new Date().toISOString() }).buildEnrichedItem(item, structuredSummary, meta);
+}
+
+function extractEvidenceFacts(item) { return getEvidenceRules().extractEvidenceFacts(item); }
+function buildNotFor(area) { return getEvidenceRules().buildNotFor(area); }
+function constrainImpactTagsToEvidence(tags, item) { return getEvidenceRules().constrainImpactTagsToEvidence(tags, item); }
+function constrainDevTagsToSource(tags, item, area) { return getEvidenceRules().constrainDevTagsToSource(tags, item, area); }
+function sanitizeVerifiedFacts(facts) { return getEvidenceRules().sanitizeVerifiedFacts(facts); }
+function isContaminatedText(value) { return getEvidenceRules().isContaminatedText(value); }
+function hasContaminatedContent(summary) { return getEvidenceRules().hasContaminatedContent(summary); }
+
+function getStructuredParser() {
+  return createStructuredParser({
+    cleanStructuredText,
+    cleanText,
+    normalizePriority,
+    normalizeRelevance,
+    normalizeScore,
+    inferArea,
+    inferPriority,
+    inferRelevance,
+    inferDevTags,
+    inferImpactTags,
+    inferRecommendation,
+    inferUrgency,
+    inferAudience,
+    sanitizeVerifiedFacts,
+    constrainDevTagsToSource,
+    constrainImpactTagsToEvidence,
+    normalizeList,
+    normalizeTags,
+    buildClientTask,
+    buildExpectedResult,
+    calculateQualityScore,
+    hasContaminatedContent,
+    looksMostlyEnglish,
+    hasCyrillic,
+    minPublishQuality: MIN_PUBLISH_QUALITY,
+    priorityRank: PRIORITY_RANK,
+    extractEvidenceFacts,
+    buildNotFor,
+    buildFallbackApplicationItems: buildFallbackApplicationItemsModule,
+    buildFallbackChecklistItems: buildFallbackChecklistItemsModule,
+    createFallbackUaTitle,
+    escapeRegExp,
+  });
+}
+
+function parseAiStructured(text, item) {
+  return getStructuredParser().parse(text, item);
+}
+
+function normalizeStructuredSummary(summary, item) {
+  return getStructuredParser().normalize(summary, item);
+}
+
+function isStructuredSummaryUseful(summary) {
+  return getStructuredParser().isUseful(summary);
+}
+
+function createFallbackStructuredSummary(item, reason = "") {
+  return getStructuredParser().fallback(item, reason);
 }
 
 async function callAiText(env, options) {

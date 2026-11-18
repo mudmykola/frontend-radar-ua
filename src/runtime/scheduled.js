@@ -1,4 +1,4 @@
-export function createScheduledHandler({ ensureProfile, run, sendDigest, dailyDigestHour = 6, now = () => new Date() }) {
+export function createScheduledHandler({ ensureProfile, run, sendDigest, dailyDigestHour = 6, getDigestPeriod, now = () => new Date() }) {
   return async function handleScheduled() {
     try {
       await ensureProfile();
@@ -8,8 +8,12 @@ export function createScheduledHandler({ ensureProfile, run, sendDigest, dailyDi
 
     await run();
 
-    if (now().getUTCHours() === dailyDigestHour) {
-      await sendDigest();
+    const current = now();
+    const period = getDigestPeriod
+      ? getDigestPeriod(current)
+      : current.getUTCHours() === dailyDigestHour ? "morning" : "";
+    if (period) {
+      await sendDigest(period);
     }
   };
 }

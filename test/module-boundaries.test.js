@@ -553,6 +553,18 @@ test("scheduled handler skips digest outside the configured hour", async () => {
   assert.deepEqual(calls, ["profile", "run"]);
 });
 
+test("scheduled handler supports named digest periods", async () => {
+  const periods = [];
+  await createScheduledHandler({
+    ensureProfile: async () => {},
+    run: async () => {},
+    sendDigest: async (period) => periods.push(period),
+    getDigestPeriod: () => "evening",
+    now: () => new Date("2026-11-17T17:00:00.000Z"),
+  })();
+  assert.deepEqual(periods, ["evening"]);
+});
+
 test("HTTP router dispatches by path and method and rejects unsupported methods", async () => {
   const calls = [];
   const router = createFetchRouter({

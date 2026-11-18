@@ -87,6 +87,7 @@ const SUBSCRIBERS_LIMIT = 500;
 
 const MIN_IMMEDIATE_RELEVANCE = 7;
 const DAILY_DIGEST_UTC_HOUR = 6;
+const DIGEST_TIME_ZONE = "Europe/Kyiv";
 const CACHE_STALE_DAYS = 14;
 const BOOTSTRAP_CHECK_TTL_SECONDS = 60 * 60 * 6;
 const TELEGRAM_UPDATE_TTL_SECONDS = 60 * 60;
@@ -121,7 +122,10 @@ const DEFAULT_PREFERENCES = {
   minPriority: "P1",
   topics: [],
   digestOnly: false,
+  timeZone: "Europe/Kyiv",
+  quietHours: true,
 };
+const SUPPORTED_TIME_ZONES = ["Europe/Kyiv", "Europe/Warsaw", "Europe/London", "America/New_York"];
 const TECH_COMMAND_FILTERS = {
   "/ai": { title: "🤖 AI / CODEX / CLAUDE", emptyTitle: "🤖 Свіжих AI-новин немає", tags: ["ai", "openai", "codex", "claude", "anthropic", "models", "api"] },
   "/frontend": { title: "💻 FRONTEND / FRAMEWORKS", emptyTitle: "💻 Свіжих Frontend-новин немає", tags: ["frontend", "vue", "nuxt", "react", "angular", "javascript", "typescript", "ui"] },
@@ -183,8 +187,9 @@ export default {
     ctx.waitUntil(createScheduledHandler({
       ensureProfile: () => ensureTelegramProfileVersion(env),
       run: () => run(env),
-      sendDigest: () => sendDailyDigest(env),
+      sendDigest: (period) => sendDailyDigest(env, { period }),
       dailyDigestHour: DAILY_DIGEST_UTC_HOUR,
+      getDigestPeriod: getKyivDigestPeriod,
     })());
   },
 
@@ -320,9 +325,30 @@ async function handleScheduledRun(env) {
   return createScheduledHandler({
     ensureProfile: () => ensureTelegramProfileVersion(env),
     run: () => run(env),
-    sendDigest: () => sendDailyDigest(env),
+    sendDigest: (period) => sendDailyDigest(env, { period }),
     dailyDigestHour: DAILY_DIGEST_UTC_HOUR,
+    getDigestPeriod: getKyivDigestPeriod,
   })();
+}
+
+function getKyivDigestPeriod(date = new Date()) {
+  const hour = Number(new Intl.DateTimeFormat("en-US", { timeZone: DIGEST_TIME_ZONE, hour: "2-digit", hour12: false }).format(date));
+  if (hour === 7) return "morning";
+  if (hour === 13) return "midday";
+  if (hour === 19) return "evening";
+  return "";
+}
+
+function getKyivDate(date = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: DIGEST_TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+}
+
+function getDigestLabel(period) {
+  return {
+    morning: "☀️ РАНКОВИЙ FRONTEND RADAR",
+    midday: "🌤 ДЕННИЙ ПУЛЬС RADAR",
+    evening: "🌙 ВЕЧІРНІЙ ПІДСУМОК RADAR",
+  }[period] || "🧠 FRONTEND INTELLIGENCE RADAR — ЗВЕДЕННЯ";
 }
 
 async function ensureTelegramProfileVersion(env) {
@@ -550,6 +576,8 @@ function normalizePreferences(preferences = {}) {
     minPriority,
     topics: normalizeTags(preferences?.topics || []),
     digestOnly: Boolean(preferences?.digestOnly),
+    timeZone: SUPPORTED_TIME_ZONES.includes(preferences?.timeZone) ? preferences.timeZone : DEFAULT_PREFERENCES.timeZone,
+    quietHours: preferences?.quietHours === undefined ? DEFAULT_PREFERENCES.quietHours : Boolean(preferences.quietHours),
   };
 }
 
@@ -571,6 +599,9 @@ async function updateSubscriberSettingsFromCallback(chatId, data, env) {
       if (action === "digest") {
         preferences.digestOnly = !preferences.digestOnly;
       }
+
+      if (action === "timezone" && SUPPORTED_TIME_ZONES.includes(value)) preferences.timeZone = value;
+      if (action === "quiet") preferences.quietHours = !preferences.quietHours;
 
       if (action === "topic" && value === "clear") {
         preferences.topics = [];
@@ -1001,6 +1032,8 @@ async function sendSettings(chatId, env, subscriber, options = {}) {
     `🔔 Мінімальний рівень: <b>${escapeHtml(preferences.minPriority)}</b>`,
     `🎯 Теми: <b>${escapeHtml(topics)}</b>`,
     `🧠 Тільки зведення: <b>${preferences.digestOnly ? "так" : "ні"}</b>`,
+    `🕒 Часовий пояс: <b>${escapeHtml(preferences.timeZone)}</b>`,
+    `🌙 Тихі години 22:00–07:00: <b>${preferences.quietHours ? "увімкнено" : "вимкнено"}</b>`,
     "",
     "Натисни кнопку нижче, щоб змінити режим.",
   ].join("\n");
@@ -1189,8 +1222,9 @@ async function sendAiTest(chatId, env) {
 async function sendDailyDigest(env, options = {}) {
   validateEnv(env);
 
-  const todayKey = new Date().toISOString().slice(0, 10);
-  const sentKey = `digest:sent:${todayKey}`;
+  const period = options.period || "morning";
+  const todayKey = getKyivDate();
+  const sentKey = `digest:sent:${todayKey}:${period}`;
 
   if (!options.force) {
     const alreadySent = await env.SHOPIFY_RADAR_KV.get(sentKey);
@@ -1210,7 +1244,7 @@ async function sendDailyDigest(env, options = {}) {
     return { sent: false, reason: "No digest items" };
   }
 
-  const sendResult = await sendPersonalizedDigest(digestItems, env);
+  const sendResult = await sendPersonalizedDigest(digestItems, env, { period });
 
   await env.SHOPIFY_RADAR_KV.put(sentKey, "1", {
     expirationTtl: 60 * 60 * 36,
@@ -1258,14 +1292,15 @@ async function sendDigestToChat(chatId, env) {
   });
 }
 
-async function sendPersonalizedDigest(items, env) {
+async function sendPersonalizedDigest(items, env, options = {}) {
   const subscribers = await getSubscribers(env);
 
   if (!subscribers.length && env.TELEGRAM_CHAT_ID) {
     const personalized = await personalizeItems(env.TELEGRAM_CHAT_ID, items, env);
+    const filtered = personalized.filter((item) => shouldDeliverToSubscriber(item, { preferences: normalizePreferences() }, { digest: true }));
     await sendTelegramRaw(
       env.TELEGRAM_CHAT_ID,
-      formatDigestMessage(personalized.slice(0, 20)),
+      formatDigestMessage(filtered.slice(0, 20), options),
       env,
       { replyMarkup: buildDigestInlineKeyboard() }
     );
@@ -1280,9 +1315,11 @@ async function sendPersonalizedDigest(items, env) {
     const results = await Promise.allSettled(
       batch.map(async (subscriber) => {
         const personalized = await personalizeItems(subscriber.chatId, items, env);
+        const filtered = personalized.filter((item) => shouldDeliverToSubscriber(item, subscriber, { digest: true }));
+        if (!filtered.length) return null;
         return sendTelegramRaw(
           subscriber.chatId,
-          formatDigestMessage(personalized.slice(0, 20)),
+          formatDigestMessage(filtered.slice(0, 20), options),
           env,
           { replyMarkup: buildDigestInlineKeyboard() }
         );
@@ -1290,7 +1327,7 @@ async function sendPersonalizedDigest(items, env) {
     );
 
     results.forEach((result, resultIndex) => {
-      if (result.status === "fulfilled") deliveredSubscribers += 1;
+      if (result.status === "fulfilled" && result.value) deliveredSubscribers += 1;
       else failed.push({ chatId: batch[resultIndex].chatId, error: safeErrorMessage(result.reason) });
     });
 
@@ -1307,7 +1344,7 @@ async function sendPersonalizedDigest(items, env) {
   };
 }
 
-function formatDigestMessage(items) {
+function formatDigestMessage(items, options = {}) {
   const normalized = items.map(normalizeStoredStructuredItem);
   const p0 = normalized.filter((item) => item.priority === "P0");
   const p1 = normalized.filter((item) => item.priority === "P1");
@@ -1346,7 +1383,7 @@ function formatDigestMessage(items) {
     .reduce((total, item) => total + Math.max(10, normalizeScore(item.effort, 5) * 8), 0);
 
   return [
-    "☕ <b>FRONTEND INTELLIGENCE RADAR — РАНКОВЕ ЗВЕДЕННЯ</b>",
+    `<b>${getDigestLabel(options.period)}</b>`,
     "",
     `Сьогодні: 🚨 <b>${p0.length}</b> термінових · ⚡ <b>${p1.length}</b> у роботу · 🧊 <b>${p2.length}</b> лише знати`,
     `⏱ Орієнтовно на перші перевірки: <b>${estimatedMinutes || 10} хв</b>`,
@@ -1780,19 +1817,24 @@ function shouldSendImmediate(item) {
 }
 
 function shouldDeliverToSubscriber(item, subscriber, options = {}) {
-  if (options.digest) return true;
-
   const preferences = normalizePreferences(subscriber?.preferences);
 
+  if (options.digest) return matchesSubscriberTopics(item, preferences);
+
   if (preferences.digestOnly) return false;
+
+  if (preferences.quietHours && item.priority !== "P0" && isQuietHours(preferences.timeZone)) return false;
 
   const itemPriorityRank = PRIORITY_RANK[item.priority || "P2"] ?? 2;
   const minPriorityRank = PRIORITY_RANK[preferences.minPriority || "P1"] ?? 1;
 
   if (itemPriorityRank > minPriorityRank) return false;
 
-  if (!preferences.topics.length) return true;
+  return matchesSubscriberTopics(item, preferences);
+}
 
+function matchesSubscriberTopics(item, preferences) {
+  if (!preferences.topics.length) return true;
   const haystack = [
     item.area || "",
     item.uaTitle || "",
@@ -1804,6 +1846,15 @@ function shouldDeliverToSubscriber(item, subscriber, options = {}) {
     .toLowerCase();
 
   return preferences.topics.some((topic) => haystack.includes(topic.toLowerCase()));
+}
+
+function isQuietHours(timeZone = DEFAULT_PREFERENCES.timeZone, date = new Date()) {
+  try {
+    const hour = Number(new Intl.DateTimeFormat("en-US", { timeZone, hour: "2-digit", hour12: false }).format(date));
+    return hour >= 22 || hour < 7;
+  } catch {
+    return false;
+  }
 }
 
 function getNewsRepository(env) {

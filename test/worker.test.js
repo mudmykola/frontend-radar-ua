@@ -719,16 +719,15 @@ test("full command resolves the visible list snapshot instead of a changed curre
   assert.deepEqual(await __test.getVisibleTelegramList(42, { SHOPIFY_RADAR_KV: kv }), ["cloudflare-item", "github-item"]);
 });
 
-test("v18 keeps the research-oriented Telegram menu and groups topics separately", () => {
+test("v20 keeps the category-oriented Telegram menu and groups topics separately", () => {
   const mainKeyboard = __test.buildMainReplyKeyboard().keyboard.flat().map((button) => button.text);
   assert.deepEqual(mainKeyboard, [
     "🆕 Свіже",
-    "🔥 Важливе",
-    "✅ Дії сьогодні",
-    "🧠 Зведення",
-    "🗂 Research теми",
-    "⚙️ Налаштування",
-    "ℹ️ Допомога",
+    "🤖 AI",
+    "💻 Frontend",
+    "🧰 Інструменти",
+    "🌐 Web Platform",
+    "🗂 Усі теми",
   ]);
 
   const topicButtons = __test.buildTopicsInlineKeyboard().inline_keyboard.flat();

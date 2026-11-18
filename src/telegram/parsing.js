@@ -1,5 +1,6 @@
 const BUTTON_COMMANDS = {
   "🆕 останні": "/latest", "🆕 свіже": "/latest", "🎯 для мене": "/latest",
+  "🤖 ai": "/ai", "💻 frontend": "/frontend", "🧰 інструменти": "/toolchain", "🌐 web platform": "/web",
   "🧰 практика": "/practice", "🗂 теми": "/topics", "📖 повні розбори": "/full",
   "🔥 важливе": "/important", "✅ дії сьогодні": "/practice", "🧠 зведення": "/digest",
   "🗂 research теми": "/topics",

@@ -316,6 +316,10 @@ test("Telegram parsing normalizes buttons, bot suffixes and indexes", () => {
   assert.equal(normalizeTelegramCommand("🔥 Важливе"), "/important");
   assert.equal(normalizeTelegramCommand("✅ Дії сьогодні"), "/practice");
   assert.equal(normalizeTelegramCommand("🗂 Research теми"), "/topics");
+  assert.equal(normalizeTelegramCommand("🤖 AI"), "/ai");
+  assert.equal(normalizeTelegramCommand("💻 Frontend"), "/frontend");
+  assert.equal(normalizeTelegramCommand("🧰 Інструменти"), "/toolchain");
+  assert.equal(normalizeTelegramCommand("🌐 Web Platform"), "/web");
   assert.equal(normalizeTelegramCommand("/latest@frontend_radar_bot"), "/latest");
   assert.deepEqual(parseCommandArgs("/full 3"), ["3"]);
   assert.equal(parseOptionalIndex("2.9"), 2);

@@ -79,7 +79,7 @@ const SUBSCRIBERS_KEY = "telegram:subscribers";
 const BOOTSTRAP_CHECKED_KEY = "latest:bootstrap:checked";
 const RUN_LAST_KEY = "run:last";
 const TELEGRAM_PROFILE_VERSION_KEY = "telegram:profile:version";
-const TELEGRAM_PROFILE_VERSION = "v18";
+const TELEGRAM_PROFILE_VERSION = "v20";
 
 const LATEST_ITEMS_LIMIT = 50;
 const DIGEST_ITEMS_LIMIT = 60;
@@ -123,6 +123,10 @@ const DEFAULT_PREFERENCES = {
   digestOnly: false,
 };
 const TECH_COMMAND_FILTERS = {
+  "/ai": { title: "🤖 AI / CODEX / CLAUDE", emptyTitle: "🤖 Свіжих AI-новин немає", tags: ["ai", "openai", "codex", "claude", "anthropic", "models", "api"] },
+  "/frontend": { title: "💻 FRONTEND / FRAMEWORKS", emptyTitle: "💻 Свіжих Frontend-новин немає", tags: ["frontend", "vue", "nuxt", "react", "angular", "javascript", "typescript", "ui"] },
+  "/toolchain": { title: "🧰 TOOLCHAIN / RUNTIME", emptyTitle: "🧰 Свіжих Toolchain-новин немає", tags: ["node", "npm", "pnpm", "bun", "homebrew", "vite", "vitest", "storybook", "runtime", "build-tools"] },
+  "/web": { title: "🌐 WEB PLATFORM / BROWSER / CLOUD", emptyTitle: "🌐 Свіжих Web Platform-новин немає", tags: ["browser", "chrome", "firefox", "web-platform", "cloudflare", "edge", "performance", "security"] },
   "/vue": { title: "💚 VUE / PINIA", emptyTitle: "💚 Свіжих Vue або Pinia новин немає", tags: ["vue", "pinia"] },
   "/nuxt": { title: "🟢 NUXT / SSR", emptyTitle: "🟢 Свіжих Nuxt новин немає", tags: ["nuxt", "ssr", "nitro"] },
   "/js": { title: "⚡ JAVASCRIPT / TYPESCRIPT / NODE", emptyTitle: "⚡ Свіжих JS/TS/Node новин немає", tags: ["javascript", "typescript", "node", "vite"] },
@@ -248,8 +252,14 @@ async function configureTelegramProfile(env) {
           "Читаю офіційні frontend release notes і пояснюю українською: що змінилося, де це корисно, чи стосується твого стеку та що робити далі.",
       },
     ],
-    ["deleteMyCommands", {}],
-    ["setMyCommands", { commands }],
+    ...[
+      { type: "default" },
+      { type: "all_private_chats" },
+      { type: "all_group_chats" },
+      { type: "all_chat_administrators" },
+    ].map((scope) => ["deleteMyCommands", { scope }]),
+    ["setMyCommands", { commands, scope: { type: "default" } }],
+    ["setMyCommands", { commands, scope: { type: "all_private_chats" } }],
   ];
 
   for (const [method, body] of operations) {
@@ -632,9 +642,11 @@ async function sendWelcome(chatId, env, subscriber = null) {
     "",
     "📌 <b>Швидка навігація:</b>",
     "• 🆕 Свіже — останні перевірені сигнали",
-    "• 🔥 Важливе — P0/P1 зміни, які варто перевірити",
-    "• ✅ Дії сьогодні — зміни з конкретним наступним кроком",
-    "• 🗂 Research теми — Frontend, AI, Toolchain, Git/DevOps, Browser, Shopify, Cloudflare",
+    "• 🤖 AI — OpenAI, Codex, Claude та AI-агенти",
+    "• 💻 Frontend — Vue, Nuxt, React, Angular, JS/TS, CSS/UI",
+    "• 🧰 Інструменти — Node, npm, pnpm, Bun, Vite, Storybook, Git",
+    "• 🌐 Web Platform — браузери, Cloudflare, performance і security",
+    "• 🗂 Усі теми — другий рівень research-фільтрів",
     "• 📖 Повний розбір — /full або /full 3",
     "• 🧠 Digest — коротке зведення",
     "",
